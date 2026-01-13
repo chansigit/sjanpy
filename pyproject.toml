@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sjanpy"
+version = "0.1.0"
+description = "A collection of Python utilities"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = []
+
+[tool.setuptools]
+py-modules = ["deg", "dotplot", "genecraft", "pres", "barplot", "nebulosa", "embedding", "pynebulosa_2d", "pynebulosa_3d"]
