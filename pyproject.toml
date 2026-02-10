@@ -5,10 +5,28 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sjanpy"
 version = "0.1.0"
-description = "A collection of Python utilities"
+description = "A collection of Python utilities for single-cell analysis visualization"
 readme = "README.md"
 requires-python = ">=3.8"
-dependencies = []
+dependencies = [
+    "numpy",
+    "pandas",
+    "scanpy",
+    "seaborn",
+    "matplotlib",
+    "scipy",
+    "scikit-learn",
+    "statsmodels",
+    "adjustText",
+    "plotly",
+    "anndata",
+]
 
-[tool.setuptools]
-py-modules = ["deg", "dotplot", "genecraft", "pres", "barplot", "nebulosa", "embedding", "pynebulosa_2d", "pynebulosa_3d"]
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["sjanpy*"]
