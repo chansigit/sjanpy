@@ -13,7 +13,6 @@ keywords = ["single-cell", "scRNA-seq", "visualization", "bioinformatics", "scan
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
@@ -51,7 +50,7 @@ docs = [
 ]
 
 [project.urls]
-Documentation = "https://sjanpy.readthedocs.io"
+Documentation = "https://chansigit.github.io/sjanpy/"
 Repository = "https://github.com/chansigit/sjanpy"
 
 [tool.setuptools.packages.find]
