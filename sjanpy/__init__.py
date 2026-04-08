@@ -4,22 +4,27 @@ sjanpy - A collection of Python utilities for single-cell analysis visualization
 
 __version__ = "0.1.0"
 
-__all__ = [
-    "deg",
-    "dotplot",
-    "embedding",
-    "barplot",
-    "nebulosa",
-    "pres",
-    "genecraft",
-    "pynebulosa_2d",
-    "pynebulosa_3d",
-]
+from . import pl
+from . import tl
+from . import pp
 
 
+# Backward-compatible lazy imports for old flat API
+# e.g. `from sjanpy import nebulosa` still works
 def __getattr__(name):
-    """Lazy import modules to avoid loading all dependencies at once."""
-    if name in __all__:
+    _compat = {
+        "nebulosa": "pl.nebulosa",
+        "pynebulosa_2d": "pl.nebulosa",
+        "pynebulosa_3d": "pl.nebulosa",
+        "embedding": "pl.embedding",
+        "dotplot": "pl.dotplot",
+        "barplot": "pl.barplot",
+        "deg": "tl.deg",
+        "pres": "tl.pres",
+        "genecraft": "pp.genecraft",
+    }
+    if name in _compat:
         import importlib
-        return importlib.import_module(f".{name}", __name__)
+        parts = _compat[name].split(".")
+        return importlib.import_module(f".{parts[0]}.{parts[1]}", __name__)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
