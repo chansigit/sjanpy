@@ -1,7 +1,4 @@
 from .build_dataset import (
-    # h5py readers
-    read_obs_h5py,
-    read_var_h5py,
     # Gene filtering
     load_gene_list,
     resolve_gene_indices,
@@ -18,3 +15,22 @@ from .build_dataset import (
     process_file,
     build_dataset,
 )
+
+from .h5ad_io import (
+    read_obs,
+    read_var,
+    locate_matrix,
+    get_matrix_shape,
+    read_matrix_rows,
+    read_sparse_chunk,
+    validate_matrix_values,
+)
+
+from .standardize import (
+    build_standardized_h5ads,
+    build_standardized_obs,
+)
+
+# Backward compatibility: old names from build_dataset
+from .h5ad_io import read_obs as read_obs_h5py
+from .h5ad_io import read_var as read_var_h5py
