@@ -7,6 +7,7 @@ __version__ = "0.1.0"
 from . import pl
 from . import tl
 from . import pp
+from . import ml
 
 
 # Backward-compatible lazy imports for old flat API
