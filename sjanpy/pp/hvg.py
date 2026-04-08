@@ -12,7 +12,6 @@ import scanpy as sc
 
 from ..ml.h5ad_io import (
     locate_matrix,
-    get_matrix_shape,
     read_matrix_rows,
     read_obs,
     _read_h5_group_to_dataframe,
