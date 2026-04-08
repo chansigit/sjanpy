@@ -21,7 +21,7 @@ sjanpy follows the Scanpy subpackage convention:
 ## Installation
 
 ```bash
-git clone https://github.com/yourusername/sjanpy.git
+git clone https://github.com/chansigit/sjanpy.git
 cd sjanpy
 pip install .
 ```
