@@ -5,9 +5,24 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sjanpy"
 version = "0.1.0"
-description = "A collection of Python utilities for single-cell analysis visualization"
+description = "Subjacent Analysis Toolkits for Single-Cell Omics in Python"
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.8"
+keywords = ["single-cell", "scRNA-seq", "visualization", "bioinformatics", "scanpy"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Scientific/Engineering :: Visualization",
+]
 dependencies = [
     "numpy",
     "pandas",
@@ -23,9 +38,21 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+ml = [
+    "torch",
+    "h5py",
+]
 dev = [
     "pytest",
 ]
+docs = [
+    "sphinx>=7.0",
+    "sphinx-rtd-theme>=2.0",
+]
+
+[project.urls]
+Documentation = "https://sjanpy.readthedocs.io"
+Repository = "https://github.com/yourusername/sjanpy"
 
 [tool.setuptools.packages.find]
 where = ["."]

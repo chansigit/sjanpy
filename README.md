@@ -1,88 +1,139 @@
 # sjanpy
 
+[![Python](https://img.shields.io/badge/python-%3E%3D3.8-blue)](https://www.python.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 **Subjacent Analysis Toolkits for Single-Cell Omics in Python**
 
-A collection of visualization and analysis utilities designed to enhance single-cell RNA-seq workflows. Built on top of [Scanpy](https://scanpy.readthedocs.io/) and [AnnData](https://anndata.readthedocs.io/), sjanpy provides publication-ready plotting functions and efficient analysis tools.
+sjanpy extends the [Scanpy](https://scanpy.readthedocs.io/) / [AnnData](https://anndata.readthedocs.io/) ecosystem with publication-quality visualizations, fast differential expression analysis, and preprocessing utilities for single-cell RNA-seq.
 
-## Features
+## Package Structure
 
-- **Nebulosa Density Plots** - Weighted kernel density estimation to address the overplotting problem in single-cell visualizations
-- **Differential Expression Analysis** - Fast vectorized DEG computation with volcano plots and cluster-level comparisons
-- **Advanced Dot Plots** - Hierarchical clustering, K-means grouping, dendrograms, and fan-shaped polar layouts
-- **Enhanced Embeddings** - High-quality UMAP/t-SNE visualizations with density overlays and smart labeling
-- **Stacked Bar Plots** - Cell composition analysis with intelligent label placement
-- **Gene Filtering** - Utilities to remove uninformative genes (predicted, non-coding, artifacts) from analysis
+sjanpy follows the Scanpy subpackage convention:
+
+| Subpackage | Purpose | Key Functions |
+|---|---|---|
+| `sjanpy.pl` | **Plotting** | Embedding, dot plot, bar plot, volcano plot, Nebulosa density |
+| `sjanpy.tl` | **Tools** | Differential expression, Pearson residuals normalization |
+| `sjanpy.pp` | **Preprocessing** | Organism-specific gene filtering (human, mouse, rat) |
+| `sjanpy.ml` | **Machine Learning** | Chunked `.pt` dataset builder from h5ad files |
 
 ## Installation
 
 ```bash
-# Clone the repository
 git clone https://github.com/yourusername/sjanpy.git
 cd sjanpy
-
-# Install dependencies
-pip install numpy pandas scipy matplotlib seaborn scanpy anndata adjustText statsmodels scikit-learn
+pip install .
 ```
 
 ## Quick Start
 
+### Embedding visualization
+
 ```python
 import scanpy as sc
-from sjanpy import nebulosa, dotplot, deg, embedding
+from sjanpy.pl import fancy_embedding_pro
 
-# Load your AnnData object
-adata = sc.read_h5ad("your_data.h5ad")
-
-# Nebulosa density plot
-nebulosa.nebulosa_density(adata, coord_key="X_umap", gene="CD3D", show=True)
-
-# Complex dot plot with clustering
-dotplot.complex_dotplot(adata, genes=marker_genes, groupby="cell_type")
-
-# Differential expression analysis
-results = deg.fast_two_group_deg(adata, label_col="condition", lst1=["Disease"], lst2=["Control"])
-
-# High-quality embedding
-embedding.fancy_embedding_pro(adata, basis="umap", color="cell_type")
+adata = sc.datasets.pbmc3k_processed()
+fancy_embedding_pro(adata, basis='umap', color='louvain')
 ```
 
-## Modules
+### Differential expression
 
-| Module | Description |
-|--------|-------------|
-| `nebulosa` | Weighted 2D KDE for gene expression visualization |
-| `deg` | Differential expression analysis and volcano plots |
-| `dotplot` | Complex dot plots with hierarchical clustering and fan layouts |
-| `embedding` | Publication-ready UMAP/t-SNE visualizations |
-| `barplot` | Stacked bar plots for cell composition |
-| `genecraft` | Gene filtering utilities for scRNA-seq |
+```python
+from sjanpy.tl import fast_two_group_deg
+from sjanpy.pl import plot_volcano
 
-## Nebulosa: Solving the Overplotting Problem
+deg = fast_two_group_deg(adata, label_col='louvain', lst1=['B cells'], lst2=['CD4 T cells'])
+plot_volcano(deg, logfc_col='log2FC', padj_col='padj')
+```
 
-Traditional scatter plots can obscure gene expression patterns due to point overlap. Nebulosa uses weighted kernel density estimation to reveal true expression distributions.
+### Nebulosa density
 
-| Before | After |
-|--------|-------|
+Traditional scatter plots obscure gene expression patterns due to point overlap. Nebulosa uses weighted kernel density estimation to reveal true expression distributions:
+
+```python
+from sjanpy.pl import nebulosa_density
+
+nebulosa_density(adata, coord_key='X_umap', gene='CD3D', show=True)
+```
+
+| Standard scatter | Nebulosa density |
+|---|---|
 | <img width="328" alt="before" src="https://github.com/user-attachments/assets/4c481b00-583b-4e7e-b064-95db59160024" /> | <img width="328" alt="after" src="https://github.com/user-attachments/assets/d4e2cc47-7d73-40d1-9b81-8360083780d1" /> |
+
+### Gene filtering
+
+```python
+from sjanpy.pp import filter_human_sc_genes
+
+# Mask artifact genes from HVG selection (predicted, non-coding, IG variable, etc.)
+adata = filter_human_sc_genes(adata, mask_hvg_only=True)
+```
+
+### Complex dot plot
+
+```python
+from sjanpy.pl import complex_dotplot
+
+complex_dotplot(
+    adata,
+    genes=marker_genes,
+    groupby='cell_type',
+    z_score=True,
+    cluster_rows=True,
+    cmap='RdBu_r',
+)
+```
+
+## Module Reference
+
+### `sjanpy.pl` — Plotting
+
+| Function | Description |
+|---|---|
+| `fancy_embedding_pro` | UMAP/t-SNE with density overlays, auto-labels, equal-aspect axes |
+| `complex_dotplot` | Dot plot with hierarchical clustering and dendrograms |
+| `fan_dotplot` | Polar/radial dot plot layout |
+| `plot_stacked_bar_repel` | Stacked bar plot with smart label placement |
+| `plot_volcano` | Volcano plot for DEG visualization |
+| `plot_cluster_deg_jitter_highlight` | Per-cluster jitter plot with gene annotations |
+| `nebulosa_density` | Weighted KDE density on embeddings |
+| `wkde2d` / `wkde3d` | Low-level 2D/3D weighted kernel density estimation |
+
+### `sjanpy.tl` — Tools
+
+| Function / Class | Description |
+|---|---|
+| `fast_two_group_deg` | Vectorized Welch's t-test DEG between two groups |
+| `compute_nested_deg_df` | Within-cluster DEG between two conditions |
+| `clip_logfc_in_nested_deg_df` | Per-cluster quantile clipping of logFC |
+| `generate_highlight_dict` | Select genes to label (top-N, k-times, manual) |
+| `PearsonResidualsScaler` | NB-based Pearson residuals normalization |
+
+### `sjanpy.pp` — Preprocessing
+
+| Function | Description |
+|---|---|
+| `filter_human_sc_genes` | Remove/mask artifact genes (human) |
+| `filter_mouse_sc_genes` | Remove/mask artifact genes (mouse) |
+| `filter_rat_sc_genes` | Remove/mask artifact genes (rat) |
+| `get_background_gene_dict` | Catalog artifact gene categories in a dataset |
+
+### `sjanpy.ml` — Machine Learning
+
+| Function | Description |
+|---|---|
+| `build_dataset` | Stream h5ad → chunked `.pt` files with condition vectors |
+| `build_condition_schema` | Build encoding schema from condition DSL specs |
+| `process_file` | Process a single h5ad file into chunks |
 
 ## Dependencies
 
-- Python >= 3.8
-- numpy
-- pandas
-- scipy
-- matplotlib
-- seaborn
-- scanpy
-- anndata
-- adjustText
-- statsmodels
-- scikit-learn
+Core: `numpy`, `pandas`, `scipy`, `matplotlib`, `seaborn`, `scanpy`, `anndata`, `adjustText`, `statsmodels`, `scikit-learn`
+
+Optional: `plotly` (3D visualization), `torch` / `h5py` (ML dataset building)
 
 ## License
 
-MIT License
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit issues or pull requests.
+MIT
