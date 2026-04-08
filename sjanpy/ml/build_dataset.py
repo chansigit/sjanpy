@@ -50,7 +50,9 @@ CLI flags
 --numerical-cond      Numerical condition spec. Repeatable. E.g. 'library_size:log1p:zscore'.
 --save-schema         Save condition schema + label mapping to JSON (use on train).
 --load-schema         Load schema from JSON (use on val/test to reuse train stats).
---chunk-size          Cells per .pt chunk (default 50000).
+--format              Output format: 'safetensors' (default, single file) or 'pt_chunks' (legacy).
+--counts-dtype        Dtype for counts: 'fp32' (default), 'bf16', or 'fp16'.
+--chunk-size          Cells per read-chunk when streaming h5ad (default 50000).
 """
 
 import argparse
@@ -402,37 +404,20 @@ def load_condition_schema(path: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Chunked h5ad streaming and .pt writing
+# Streaming h5ad → tensor conversion (shared by both output formats)
 # ---------------------------------------------------------------------------
 
-def process_file(h5ad_path, output_dir, gene_indices, n_total_genes,
-                 condition_columns, n_cond, label_col, label_to_idx,
-                 obs_df, chunk_size):
-    """Stream one h5ad file in row chunks, write .pt files.
+def _stream_h5ad_to_tensors(h5ad_path, gene_indices, n_total_genes,
+                            condition_columns, n_cond, label_col, label_to_idx,
+                            obs_df, chunk_size, counts_dtype=None):
+    """Stream h5ad in row chunks, yield (counts, condition, labels) tensors per chunk.
 
     Args:
-        h5ad_path: path to h5ad file
-        output_dir: output directory for .pt files
-        gene_indices: numpy array of gene column indices to keep (sorted)
-        n_total_genes: total number of genes in the h5ad (for boolean lookup sizing)
-        condition_columns: condition column metadata
-        n_cond: total condition vector dim
-        label_col: obs column name for labels, or None to skip labels
-        label_to_idx: dict mapping label -> int index, or None
-        obs_df: preloaded obs DataFrame
-        chunk_size: rows per chunk
-
-    Returns:
-        dict with n_cells, n_chunks, chunk_sizes
+        counts_dtype: optional torch dtype for counts (e.g. torch.bfloat16).
     """
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
     n_genes = len(gene_indices)
-    # Boolean lookup for O(1) gene membership test (replaces np.isin per chunk)
     gene_membership = np.zeros(n_total_genes, dtype=bool)
     gene_membership[gene_indices] = True
-    # Vectorized column remap: remap_vec[original_col] = new_col_index
     remap_vec = np.full(n_total_genes, -1, dtype=np.int64)
     remap_vec[gene_indices] = np.arange(n_genes)
 
@@ -444,15 +429,13 @@ def process_file(h5ad_path, output_dir, gene_indices, n_total_genes,
         h5_indices = x_group["indices"]
 
         n_chunks = math.ceil(n_rows / chunk_size)
-        print(f"  {n_rows} cells, {n_chunks} chunks, {n_genes} genes")
-        chunk_sizes = []
+        print(f"  {n_rows} cells, {n_chunks} read-chunks, {n_genes} genes")
 
         for chunk_idx in range(n_chunks):
             row_start = chunk_idx * chunk_size
             row_end = min(row_start + chunk_size, n_rows)
             chunk_n = row_end - row_start
 
-            # --- Read sparse rows and subset to selected gene columns ---
             ptr_start = int(indptr[row_start])
             ptr_end = int(indptr[row_end])
 
@@ -462,18 +445,10 @@ def process_file(h5ad_path, output_dir, gene_indices, n_total_genes,
                 chunk_data = h5_data[ptr_start:ptr_end]
                 chunk_indices = h5_indices[ptr_start:ptr_end]
 
-                # Filter to selected gene columns via boolean lookup (O(1) per element)
                 keep = gene_membership[chunk_indices]
                 filtered_data = chunk_data[keep]
                 filtered_indices = remap_vec[chunk_indices[keep]]
 
-                # Rebuild indptr for the gene-filtered sparse rows.
-                # chunk_indptr_orig gives per-row nnz boundaries (shifted to 0).
-                # cumsum_keep[i] = number of kept elements in positions 0..i.
-                # For row r, its nnz-end in the original chunk is ends[r]; the
-                # corresponding end in the filtered array is cumsum_keep[ends[r]-1].
-                # When ends[r]==0 the row had no nonzeros at all, so its filtered
-                # end is also 0 — hence the np.where guard.
                 chunk_indptr_orig = indptr[row_start:row_end + 1] - ptr_start
                 cumsum_keep = np.cumsum(keep)
                 new_indptr = np.empty(chunk_n + 1, dtype=np.int64)
@@ -488,12 +463,12 @@ def process_file(h5ad_path, output_dir, gene_indices, n_total_genes,
                 counts_dense = chunk_csr.toarray().astype(np.float32)
 
             counts_tensor = torch.from_numpy(counts_dense)
+            if counts_dtype is not None:
+                counts_tensor = counts_tensor.to(counts_dtype)
 
-            # --- Build condition vector ---
             obs_chunk = obs_df.iloc[row_start:row_end]
             cond_tensor = build_condition_tensor(obs_chunk, condition_columns, n_cond)
 
-            # --- Build labels ---
             if label_col is not None and label_to_idx is not None:
                 label_vals = obs_chunk[label_col]
                 if hasattr(label_vals, "cat"):
@@ -504,18 +479,75 @@ def process_file(h5ad_path, output_dir, gene_indices, n_total_genes,
             else:
                 labels_tensor = torch.zeros(chunk_n, dtype=torch.long)
 
-            # --- Save chunk ---
-            chunk_path = output_dir / f"chunk_{chunk_idx:04d}.pt"
-            torch.save({
-                "counts": counts_tensor,
-                "condition": cond_tensor,
-                "labels": labels_tensor,
-            }, chunk_path)
+            yield counts_tensor, cond_tensor, labels_tensor
 
-            chunk_sizes.append(chunk_n)
-            print(f"    chunk {chunk_idx}: {chunk_n} cells -> {chunk_path.name}")
 
-    return {"n_cells": n_rows, "n_chunks": n_chunks, "chunk_sizes": chunk_sizes}
+# ---------------------------------------------------------------------------
+# Output format: pt_chunks (legacy, multiple .pt files)
+# ---------------------------------------------------------------------------
+
+def process_file(h5ad_path, output_dir, gene_indices, n_total_genes,
+                 condition_columns, n_cond, label_col, label_to_idx,
+                 obs_df, chunk_size, counts_dtype=None):
+    """Stream h5ad → write multiple .pt chunk files (legacy format)."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    chunk_sizes = []
+    for chunk_idx, (counts, cond, labels) in enumerate(
+        _stream_h5ad_to_tensors(
+            h5ad_path, gene_indices, n_total_genes,
+            condition_columns, n_cond, label_col, label_to_idx,
+            obs_df, chunk_size, counts_dtype,
+        )
+    ):
+        chunk_path = output_dir / f"chunk_{chunk_idx:04d}.pt"
+        torch.save({"counts": counts, "condition": cond, "labels": labels}, chunk_path)
+        chunk_sizes.append(len(counts))
+        print(f"    chunk {chunk_idx}: {len(counts)} cells -> {chunk_path.name}")
+
+    n_cells = sum(chunk_sizes)
+    return {"n_cells": n_cells, "n_chunks": len(chunk_sizes), "chunk_sizes": chunk_sizes}
+
+
+# ---------------------------------------------------------------------------
+# Output format: safetensors (single file per split)
+# ---------------------------------------------------------------------------
+
+def process_file_safetensors(h5ad_path, output_path, gene_indices, n_total_genes,
+                             condition_columns, n_cond, label_col, label_to_idx,
+                             obs_df, chunk_size, counts_dtype=None):
+    """Stream h5ad → accumulate → write a single .safetensors file.
+
+    Args:
+        output_path: path to the .safetensors file (e.g. "pt_chunks/train.safetensors")
+    """
+    from safetensors.torch import save_file
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    all_counts, all_cond, all_labels = [], [], []
+    for counts, cond, labels in _stream_h5ad_to_tensors(
+        h5ad_path, gene_indices, n_total_genes,
+        condition_columns, n_cond, label_col, label_to_idx,
+        obs_df, chunk_size, counts_dtype,
+    ):
+        all_counts.append(counts)
+        all_cond.append(cond)
+        all_labels.append(labels)
+
+    counts_cat = torch.cat(all_counts)
+    cond_cat = torch.cat(all_cond)
+    labels_cat = torch.cat(all_labels)
+    n_cells = len(counts_cat)
+
+    print(f"  Writing {output_path} ({n_cells:,} cells, "
+          f"counts {counts_cat.dtype}, {counts_cat.nelement() * counts_cat.element_size() / 1e9:.1f}GB)")
+
+    save_file({"counts": counts_cat, "condition": cond_cat, "labels": labels_cat}, str(output_path))
+
+    return {"n_cells": n_cells}
 
 
 # ---------------------------------------------------------------------------
@@ -524,8 +556,14 @@ def process_file(h5ad_path, output_dir, gene_indices, n_total_genes,
 
 def build_dataset(input_path, output_dir, gene_list, gene_col, label_col,
                   numerical_specs, cat_specs, chunk_size,
-                  save_schema_path, load_schema_path):
-    """Build chunked .pt dataset from a single h5ad file."""
+                  save_schema_path, load_schema_path,
+                  output_format="safetensors", counts_dtype=None):
+    """Build dataset from a single h5ad file.
+
+    Args:
+        output_format: "safetensors" (single file, fast loading) or "pt_chunks" (legacy).
+        counts_dtype: torch dtype for counts tensor (e.g. torch.bfloat16). None = fp32.
+    """
     input_path = Path(input_path)
     output_dir = Path(output_dir)
 
@@ -608,11 +646,22 @@ def build_dataset(input_path, output_dir, gene_list, gene_col, label_col,
                               label_to_idx, n_labels)
 
     # --- Process file ---
-    file_info = process_file(
-        input_path, output_dir, gene_indices, n_total_genes,
-        condition_columns, n_cond, label_col, label_to_idx,
-        obs_df, chunk_size,
-    )
+    dtype_str = str(counts_dtype).replace("torch.", "") if counts_dtype else "fp32"
+    print(f"  Format: {output_format}, counts dtype: {dtype_str}")
+
+    if output_format == "safetensors":
+        st_path = output_dir / f"{input_path.stem}.safetensors"
+        file_info = process_file_safetensors(
+            input_path, st_path, gene_indices, n_total_genes,
+            condition_columns, n_cond, label_col, label_to_idx,
+            obs_df, chunk_size, counts_dtype,
+        )
+    else:
+        file_info = process_file(
+            input_path, output_dir, gene_indices, n_total_genes,
+            condition_columns, n_cond, label_col, label_to_idx,
+            obs_df, chunk_size, counts_dtype,
+        )
 
     # --- Write metadata ---
     cond_cols_serializable = []
@@ -623,6 +672,8 @@ def build_dataset(input_path, output_dir, gene_list, gene_col, label_col,
         cond_cols_serializable.append(cc_copy)
 
     metadata = {
+        "format": output_format,
+        "counts_dtype": dtype_str,
         "input_file": str(input_path),
         "n_genes": n_genes,
         "gene_names": gene_names,
@@ -631,11 +682,12 @@ def build_dataset(input_path, output_dir, gene_list, gene_col, label_col,
         "label_col": label_col,
         "label_to_idx": label_to_idx,
         "n_labels": n_labels,
-        "chunk_size": chunk_size,
         "n_cells": file_info["n_cells"],
-        "n_chunks": file_info["n_chunks"],
-        "chunk_sizes": file_info["chunk_sizes"],
     }
+    if output_format == "pt_chunks":
+        metadata["chunk_size"] = chunk_size
+        metadata["n_chunks"] = file_info["n_chunks"]
+        metadata["chunk_sizes"] = file_info["chunk_sizes"]
 
     metadata_path = output_dir / "metadata.json"
     with open(metadata_path, "w") as f:
@@ -707,10 +759,21 @@ def main():
              "When set, --cat-cond and --numerical-cond are ignored.",
     )
 
-    # Chunking
+    # Output format
+    parser.add_argument(
+        "--format", choices=["safetensors", "pt_chunks"], default="safetensors",
+        help="Output format: 'safetensors' (single file, fast) or 'pt_chunks' (legacy). Default: safetensors.",
+    )
+    parser.add_argument(
+        "--counts-dtype", choices=["fp32", "bf16", "fp16"], default="fp32",
+        help="Dtype for counts tensor. bf16 halves disk/memory. Default: fp32.",
+    )
+
+    # Chunking (used for h5ad read batching, and for pt_chunks output)
     parser.add_argument(
         "--chunk-size", type=int, default=50000,
-        help="Number of cells per .pt chunk (default: 50000)",
+        help="Cells per read-chunk when streaming h5ad (default: 50000). "
+             "Also the chunk size for pt_chunks output format.",
     )
 
     args = parser.parse_args()
@@ -741,7 +804,12 @@ def main():
         print(f"Gene filter: {len(gene_list)} genes from file")
     else:
         print(f"Gene filter: all genes")
+    # Resolve counts dtype
+    _dtype_map = {"fp32": None, "bf16": torch.bfloat16, "fp16": torch.float16}
+    counts_dtype = _dtype_map[args.counts_dtype]
+
     print(f"Label column: {args.cell_type_label_col or '(none)'}")
+    print(f"Format: {args.format}, counts dtype: {args.counts_dtype}")
     print(f"Chunk size: {args.chunk_size}")
 
     ok = build_dataset(
@@ -755,6 +823,8 @@ def main():
         chunk_size=args.chunk_size,
         save_schema_path=args.save_schema,
         load_schema_path=args.load_schema,
+        output_format=args.format,
+        counts_dtype=counts_dtype,
     )
 
     return 0 if ok else 1

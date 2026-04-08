@@ -13,6 +13,7 @@ from .build_dataset import (
     load_condition_schema,
     # Core processing
     process_file,
+    process_file_safetensors,
     build_dataset,
 )
 
