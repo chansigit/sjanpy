@@ -28,17 +28,17 @@ from .h5ad_io import locate_matrix, get_matrix_shape, read_sparse_chunk
 # Var builder
 # ---------------------------------------------------------------------------
 
-def _build_var(all_var: pd.DataFrame, hvg_mask: np.ndarray) -> pd.DataFrame:
+def _build_var(all_var: pd.DataFrame, hvg_mask: np.ndarray, use_feature_name_as_index: bool = True) -> pd.DataFrame:
     """Build the output var DataFrame.
 
     Copies *all_var*, adds a ``highly_variable`` boolean column.
-    If a ``feature_name`` column exists and >50 % of values are valid
-    strings, those are used as the index.
+    If *use_feature_name_as_index* is True and a ``feature_name`` column
+    exists with >50 % valid strings, those are used as the index.
     """
     var = all_var.copy()
     var["highly_variable"] = hvg_mask.astype(bool)
 
-    if "feature_name" in var.columns:
+    if use_feature_name_as_index and "feature_name" in var.columns:
         names = var["feature_name"]
         valid = names.notna() & (names.astype(str).str.strip() != "")
         if valid.mean() > 0.5:
@@ -91,12 +91,10 @@ def _normalize_csr(X: csr_matrix, target_sum: float) -> csr_matrix:
     X = X.astype(np.float32).copy()
     row_sums = np.asarray(X.sum(axis=1)).ravel()
     row_sums[row_sums == 0] = 1.0
-    # Multiply each row in-place
-    indptr = X.indptr
-    for i in range(X.shape[0]):
-        s, e = indptr[i], indptr[i + 1]
-        if s < e:
-            X.data[s:e] = np.log1p(target_sum * X.data[s:e] / row_sums[i])
+    # Vectorized: repeat each row_sum for the number of nonzeros in that row
+    row_counts = np.diff(X.indptr)
+    divisors = np.repeat(row_sums, row_counts)
+    X.data = np.log1p(target_sum * X.data / divisors).astype(np.float32)
     return X
 
 
@@ -126,7 +124,9 @@ def _write_obs_to_h5(grp: h5py.Group, std_obs: pd.DataFrame) -> None:
 
     # Index
     idx_vals = np.array(std_obs.index.astype(str), dtype="S")
-    grp.create_dataset("_index", data=idx_vals)
+    idx_ds = grp.create_dataset("_index", data=idx_vals)
+    idx_ds.attrs["encoding-type"] = "string-array"
+    idx_ds.attrs["encoding-version"] = "0.2.0"
 
     for col in columns:
         series = std_obs[col]
@@ -136,11 +136,17 @@ def _write_obs_to_h5(grp: h5py.Group, std_obs: pd.DataFrame) -> None:
             g.attrs["encoding-type"] = "categorical"
             g.attrs["encoding-version"] = "0.2.0"
             g.attrs["ordered"] = False
-            g.create_dataset("codes", data=cat.cat.codes.values.astype(np.int32))
+            codes_ds = g.create_dataset("codes", data=cat.cat.codes.values.astype(np.int32))
+            codes_ds.attrs["encoding-type"] = "array"
+            codes_ds.attrs["encoding-version"] = "0.2.0"
             cats = np.array(cat.cat.categories.astype(str), dtype="S")
-            g.create_dataset("categories", data=cats)
-        elif np.issubdtype(series.dtype, np.floating) or np.issubdtype(series.dtype, np.integer):
-            grp.create_dataset(col, data=series.values)
+            cats_ds = g.create_dataset("categories", data=cats)
+            cats_ds.attrs["encoding-type"] = "string-array"
+            cats_ds.attrs["encoding-version"] = "0.2.0"
+        elif series.dtype == np.bool_ or np.issubdtype(series.dtype, np.floating) or np.issubdtype(series.dtype, np.integer):
+            ds = grp.create_dataset(col, data=series.values)
+            ds.attrs["encoding-type"] = "array"
+            ds.attrs["encoding-version"] = "0.2.0"
         else:
             vals = np.array(series.astype(str), dtype="S")
             ds = grp.create_dataset(col, data=vals)
@@ -277,98 +283,143 @@ def _write_streaming(
     var_out = _build_var(all_var, hvg_mask)
 
     # Read obsm from source
-    obsm_keys: list[str] = []
     obsm_data: dict[str, np.ndarray] = {}
     with h5py.File(str(h5ad_path), "r") as f:
         if "obsm" in f:
-            obsm_keys = list(f["obsm"].keys())
-            for k in obsm_keys:
+            for k in f["obsm"]:
                 obsm_data[k] = f["obsm"][k][:]
 
     stats: dict = {}
 
     for s in splits:
-        out_path = output_dir / f"{s}.h5ad"
-        split_mask_global = split_col == s
-        n_split = int(split_mask_global.sum())
+        split_mask_full = split_col == s
+        n_cells = int(split_mask_full.sum())
 
-        if n_split == 0:
+        if n_cells == 0:
             stats[s] = {"n_cells": 0, "nnz_counts": 0, "nnz_normalized": 0,
                         "library_size_mean": 0.0, "library_size_median": 0.0, "file_size_mb": 0.0}
             continue
 
-        # Collect raw CSR chunks, library sizes, and cell indices
-        raw_chunks: list[csr_matrix] = []
-        norm_chunks: list[csr_matrix] = []
-        lib_sizes: list[np.ndarray] = []
-        indices_list: list[np.ndarray] = []
+        out_path = output_dir / f"{s}.h5ad"
+        obs_indices = np.where(split_mask_full)[0]
 
-        with h5py.File(str(h5ad_path), "r") as f:
-            mat_obj, _, _ = locate_matrix(f, matrix_source)
+        with h5py.File(str(h5ad_path), "r") as src_f:
+            mat_obj, _, _ = locate_matrix(src_f, matrix_source)
             n_obs, n_vars = get_matrix_shape(mat_obj)
 
-            for start in range(0, n_obs, chunk_size):
-                end = min(start + chunk_size, n_obs)
-                local_mask = split_mask_global[start:end]
-                if not local_mask.any():
-                    continue
+            with h5py.File(str(out_path), "w") as out_f:
+                # Create resizable datasets for raw X
+                x_grp = out_f.create_group("X")
+                x_data = x_grp.create_dataset("data", shape=(0,), maxshape=(None,), dtype=np.float32)
+                x_indices = x_grp.create_dataset("indices", shape=(0,), maxshape=(None,), dtype=np.int32)
+                x_indptr: list[np.int64] = [np.int64(0)]
 
-                chunk = read_sparse_chunk(mat_obj, start, end, n_vars)
-                chunk = chunk[local_mask].astype(np.float32)
-                row_sums = np.asarray(chunk.sum(axis=1)).ravel()
+                # Create resizable datasets for normalized layer
+                layers_grp = out_f.create_group("layers")
+                n_grp = layers_grp.create_group("normalized")
+                n_data = n_grp.create_dataset("data", shape=(0,), maxshape=(None,), dtype=np.float32)
+                n_indices = n_grp.create_dataset("indices", shape=(0,), maxshape=(None,), dtype=np.int32)
+                n_indptr: list[np.int64] = [np.int64(0)]
 
-                raw_chunks.append(chunk)
-                norm_chunks.append(_normalize_csr(chunk.copy(), target_sum))
-                lib_sizes.append(row_sums)
-                indices_list.append(np.arange(start, end)[local_mask])
+                lib_sizes: list[np.ndarray] = []
+                total_nnz_x = 0
+                total_nnz_n = 0
 
-        # Stack
-        X_raw = sp_vstack(raw_chunks, format="csr").astype(np.float32)
-        X_norm = sp_vstack(norm_chunks, format="csr").astype(np.float32)
-        ls = np.concatenate(lib_sizes)
-        all_indices = np.concatenate(indices_list)
+                for start in range(0, n_obs, chunk_size):
+                    end = min(start + chunk_size, n_obs)
+                    local_mask = split_mask_full[start:end]
+                    if not local_mask.any():
+                        continue
 
-        del raw_chunks, norm_chunks
-        gc.collect()
+                    chunk = read_sparse_chunk(mat_obj, start, end, n_vars)
+                    chunk = chunk.astype(np.float32)
+                    row_sums = np.asarray(chunk.sum(axis=1)).ravel()
 
-        std_obs = build_standardized_obs(obs, all_indices, cell_type_col, batch_key, dataset_name, ls, extra_obs_columns)
+                    split_chunk = chunk[local_mask]
+                    split_lib = row_sums[local_mask]
+                    del chunk, row_sums
 
-        # Write directly via h5py
-        with h5py.File(str(out_path), "w") as hf:
-            # X (raw counts)
-            x_grp = hf.create_group("X")
-            _write_csr_to_h5(x_grp, X_raw)
+                    if not isinstance(split_chunk, csr_matrix):
+                        split_chunk = split_chunk.tocsr()
 
-            # layers/normalized
-            layers_grp = hf.create_group("layers")
-            norm_grp = layers_grp.create_group("normalized")
-            _write_csr_to_h5(norm_grp, X_norm)
+                    # Normalize this chunk
+                    norm_chunk = _normalize_csr(split_chunk.copy(), target_sum)
 
-            # obs
-            obs_grp = hf.create_group("obs")
-            _write_obs_to_h5(obs_grp, std_obs)
+                    # Append raw CSR components
+                    nnz_x = split_chunk.nnz
+                    if nnz_x > 0:
+                        x_data.resize(total_nnz_x + nnz_x, axis=0)
+                        x_data[total_nnz_x:] = split_chunk.data
+                        x_indices.resize(total_nnz_x + nnz_x, axis=0)
+                        x_indices[total_nnz_x:] = split_chunk.indices.astype(np.int32)
+                    for row_nnz in np.diff(split_chunk.indptr):
+                        x_indptr.append(x_indptr[-1] + row_nnz)
+                    total_nnz_x += nnz_x
 
-            # var
-            var_grp = hf.create_group("var")
-            _write_var_to_h5(var_grp, var_out)
+                    # Append normalized CSR components
+                    nnz_n = norm_chunk.nnz
+                    if nnz_n > 0:
+                        n_data.resize(total_nnz_n + nnz_n, axis=0)
+                        n_data[total_nnz_n:] = norm_chunk.data
+                        n_indices.resize(total_nnz_n + nnz_n, axis=0)
+                        n_indices[total_nnz_n:] = norm_chunk.indices.astype(np.int32)
+                    for row_nnz in np.diff(norm_chunk.indptr):
+                        n_indptr.append(n_indptr[-1] + row_nnz)
+                    total_nnz_n += nnz_n
 
-            # obsm
-            if obsm_keys:
-                obsm_grp = hf.create_group("obsm")
-                for k in obsm_keys:
-                    obsm_grp.create_dataset(k, data=obsm_data[k][all_indices])
+                    lib_sizes.append(split_lib)
+                    del split_chunk, norm_chunk
+                    gc.collect()
+
+                # Write indptr arrays and CSR metadata
+                x_grp.create_dataset("indptr", data=np.array(x_indptr, dtype=np.int64))
+                x_grp.attrs["encoding-type"] = "csr_matrix"
+                x_grp.attrs["encoding-version"] = "0.1.0"
+                x_grp.attrs["shape"] = [n_cells, n_vars]
+
+                n_grp.create_dataset("indptr", data=np.array(n_indptr, dtype=np.int64))
+                n_grp.attrs["encoding-type"] = "csr_matrix"
+                n_grp.attrs["encoding-version"] = "0.1.0"
+                n_grp.attrs["shape"] = [n_cells, n_vars]
+
+                layers_grp.attrs["encoding-type"] = "dict"
+                layers_grp.attrs["encoding-version"] = "0.1.0"
+
+                # obs
+                library_size = np.concatenate(lib_sizes)
+                std_obs = build_standardized_obs(
+                    obs, obs_indices, cell_type_col, batch_key,
+                    dataset_name, library_size, extra_obs_columns,
+                )
+                _write_obs_to_h5(out_f.create_group("obs"), std_obs)
+
+                # var
+                _write_var_to_h5(out_f.create_group("var"), var_out)
+
+                # obsm
+                if obsm_data:
+                    obsm_grp = out_f.create_group("obsm")
+                    obsm_grp.attrs["encoding-type"] = "dict"
+                    obsm_grp.attrs["encoding-version"] = "0.1.0"
+                    for k, arr in obsm_data.items():
+                        ds = obsm_grp.create_dataset(k, data=arr[obs_indices])
+                        ds.attrs["encoding-type"] = "array"
+                        ds.attrs["encoding-version"] = "0.2.0"
+
+                # anndata root attributes
+                out_f.attrs["encoding-type"] = "anndata"
+                out_f.attrs["encoding-version"] = "0.1.0"
 
         file_size = os.path.getsize(out_path) / (1024 * 1024)
         stats[s] = {
-            "n_cells": int(X_raw.shape[0]),
-            "nnz_counts": int(X_raw.nnz),
-            "nnz_normalized": int(X_norm.nnz),
-            "library_size_mean": float(np.mean(ls)),
-            "library_size_median": float(np.median(ls)),
+            "n_cells": n_cells,
+            "nnz_counts": total_nnz_x,
+            "nnz_normalized": total_nnz_n,
+            "library_size_mean": float(np.mean(library_size)),
+            "library_size_median": float(np.median(library_size)),
             "file_size_mb": float(file_size),
         }
-
-        del X_raw, X_norm
+        del obs_indices, library_size, std_obs
         gc.collect()
 
     return stats

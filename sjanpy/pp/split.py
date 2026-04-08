@@ -33,7 +33,13 @@ def stratified_split(
         Two columns: ``cell_index`` (int position) and ``split``
         (one of ``"train"``, ``"val"``, ``"test"``).
     """
+    if val_ratio < 0 or test_ratio < 0:
+        raise ValueError("val_ratio and test_ratio must be non-negative")
     held_out_ratio = val_ratio + test_ratio
+    if held_out_ratio >= 1.0:
+        raise ValueError(
+            f"val_ratio + test_ratio must be < 1.0, got {held_out_ratio}"
+        )
     n = len(obs)
     indices = np.arange(n)
     labels = obs[stratify_col].values

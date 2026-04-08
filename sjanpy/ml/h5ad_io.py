@@ -9,6 +9,7 @@ so callers never need to touch anndata or scanpy.
 from __future__ import annotations
 
 import warnings
+from pathlib import Path
 from typing import Literal
 
 import h5py
@@ -42,9 +43,24 @@ def _decode_stringlike(values):
     return np.array([_one(v) for v in arr.flat], dtype=object).reshape(arr.shape)
 
 
-def _read_h5_group_to_dataframe(grp: h5py.Group) -> pd.DataFrame:
+def read_h5_group(grp: h5py.Group) -> pd.DataFrame:
     """Read an h5ad obs or var group into a :class:`~pandas.DataFrame`.
 
+    This is a public utility for reading any obs/var-style HDF5 group
+    into a pandas DataFrame.  It handles both legacy and modern anndata
+    on-disk encodings.
+
+    Parameters
+    ----------
+    grp : h5py.Group
+        An open HDF5 group (e.g. ``f["obs"]`` or ``f["var"]``).
+
+    Returns
+    -------
+    pandas.DataFrame
+
+    Notes
+    -----
     Handles:
     * Legacy ``__categories`` format (older anndata versions)
     * Modern categorical / string-array encoding-type attributes
@@ -116,7 +132,7 @@ def _read_h5_group_to_dataframe(grp: h5py.Group) -> pd.DataFrame:
 # Public: obs / var readers
 # ---------------------------------------------------------------------------
 
-def read_obs(h5ad_path: str | object) -> pd.DataFrame:
+def read_obs(h5ad_path: str | Path) -> pd.DataFrame:
     """Read the ``obs`` DataFrame from an h5ad file via h5py.
 
     Parameters
@@ -129,10 +145,10 @@ def read_obs(h5ad_path: str | object) -> pd.DataFrame:
     pandas.DataFrame
     """
     with h5py.File(str(h5ad_path), "r") as f:
-        return _read_h5_group_to_dataframe(f["obs"])
+        return read_h5_group(f["obs"])
 
 
-def read_var(h5ad_path: str | object, group: str = "var") -> pd.DataFrame:
+def read_var(h5ad_path: str | Path, group: str = "var") -> pd.DataFrame:
     """Read a ``var`` DataFrame from an h5ad file via h5py.
 
     Parameters
@@ -148,7 +164,7 @@ def read_var(h5ad_path: str | object, group: str = "var") -> pd.DataFrame:
     pandas.DataFrame
     """
     with h5py.File(str(h5ad_path), "r") as f:
-        return _read_h5_group_to_dataframe(f[group])
+        return read_h5_group(f[group])
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +215,7 @@ def locate_matrix(
     )
 
 
-def get_matrix_shape(matrix_obj) -> tuple[int, int]:
+def get_matrix_shape(matrix_obj: h5py.Group | h5py.Dataset) -> tuple[int, int]:
     """Return ``(n_obs, n_vars)`` for a sparse group or dense dataset.
 
     Parameters
@@ -221,7 +237,7 @@ def get_matrix_shape(matrix_obj) -> tuple[int, int]:
 
 
 def read_matrix_rows(
-    matrix_obj,
+    matrix_obj: h5py.Group | h5py.Dataset,
     row_indices: np.ndarray,
 ) -> csr_matrix:
     """Read arbitrary rows from a sparse group or dense dataset.
@@ -244,7 +260,15 @@ def read_matrix_rows(
     if isinstance(matrix_obj, h5py.Group):
         # Sparse (CSR) group
         n_obs, n_vars = get_matrix_shape(matrix_obj)
-        indptr_full = matrix_obj["indptr"][:]
+
+        if n_rows == 0:
+            return csr_matrix((0, n_vars))
+
+        # Read only the needed indptr range (not the full array)
+        row_min = int(row_indices.min())
+        row_max = int(row_indices.max())
+        indptr_slice = matrix_obj["indptr"][row_min:row_max + 2]
+
         all_data = matrix_obj["data"]
         all_indices = matrix_obj["indices"]
 
@@ -253,7 +277,9 @@ def read_matrix_rows(
         idx_parts = []
 
         for i, row in enumerate(row_indices):
-            start, end = int(indptr_full[row]), int(indptr_full[row + 1])
+            local_row = int(row) - row_min
+            start = int(indptr_slice[local_row])
+            end = int(indptr_slice[local_row + 1])
             row_len = end - start
             new_indptr[i + 1] = new_indptr[i] + row_len
             if row_len > 0:
@@ -283,7 +309,7 @@ def read_matrix_rows(
 
 
 def read_sparse_chunk(
-    matrix_obj,
+    matrix_obj: h5py.Group | h5py.Dataset,
     start: int,
     end: int,
     n_vars: int,
@@ -321,7 +347,7 @@ def read_sparse_chunk(
 
 
 def validate_matrix_values(
-    matrix_obj,
+    matrix_obj: h5py.Group | h5py.Dataset,
     expected_type: Literal["counts", "normalized"],
     sample_n: int = 200_000,
     strict: bool = False,
@@ -359,7 +385,9 @@ def validate_matrix_values(
             idx = np.sort(rng.choice(total, size=n, replace=False))
             sample = data_ds[idx]
     else:
-        flat = matrix_obj[:].ravel()
+        # Dense dataset — read a small sample of rows instead of the full matrix
+        n_rows = min(1000, matrix_obj.shape[0])
+        flat = matrix_obj[:n_rows, :].ravel()
         nonzero = flat[flat != 0]
         if len(nonzero) == 0:
             return True

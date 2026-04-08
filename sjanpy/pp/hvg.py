@@ -13,8 +13,7 @@ import scanpy as sc
 from ..ml.h5ad_io import (
     locate_matrix,
     read_matrix_rows,
-    read_obs,
-    _read_h5_group_to_dataframe,
+    read_h5_group,
 )
 
 
@@ -167,17 +166,15 @@ def compute_hvg(
     """
     cell_indices = np.asarray(cell_indices, dtype=np.int64)
 
-    # Read matrix and var from h5py
+    # Read matrix, var, and obs from a single file open
     with h5py.File(str(h5ad_path), "r") as f:
         matrix_obj, var_grp, _ = locate_matrix(f, matrix_source)
         X_sub = read_matrix_rows(matrix_obj, cell_indices)
-        var_df = _read_h5_group_to_dataframe(var_grp)
+        var_df = read_h5_group(var_grp)
+        obs_full = read_h5_group(f["obs"])
 
     # Make gene names unique
     var_df = _make_var_names_unique(var_df)
-
-    # Read obs for batch key
-    obs_full = read_obs(h5ad_path)
     obs_sub = obs_full.iloc[cell_indices].copy()
 
     # Build temporary AnnData
