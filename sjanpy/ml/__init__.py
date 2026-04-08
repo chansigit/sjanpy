@@ -32,6 +32,11 @@ from .standardize import (
     build_standardized_obs,
 )
 
+from .dataset import (
+    GPUDataset,
+    StreamingDataset,
+)
+
 # Backward compatibility: old names from build_dataset
 from .h5ad_io import read_obs as read_obs_h5py
 from .h5ad_io import read_var as read_var_h5py
