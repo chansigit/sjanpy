@@ -105,7 +105,7 @@ class TestReadMatrixRows:
 
 class TestReadSparseChunk:
     def test_contiguous_chunk(self, tmp_h5ad_dir):
-        """Read rows 10..20 from tiny.h5ad."""
+        """Read rows 0..5 from tiny.h5ad."""
         with h5py.File(tmp_h5ad_dir / "tiny.h5ad", "r") as f:
             mat, _, _ = locate_matrix(f, "X")
             shape = get_matrix_shape(mat)

@@ -132,7 +132,7 @@ def read_obs(h5ad_path: str | object) -> pd.DataFrame:
         return _read_h5_group_to_dataframe(f["obs"])
 
 
-def read_var(h5ad_path: str | object, *, group: str = "var") -> pd.DataFrame:
+def read_var(h5ad_path: str | object, group: str = "var") -> pd.DataFrame:
     """Read a ``var`` DataFrame from an h5ad file via h5py.
 
     Parameters
