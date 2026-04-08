@@ -2,7 +2,7 @@
 sjanpy - A collection of Python utilities for single-cell analysis visualization
 """
 
-__version__ = "0.0.1"
+__version__ = "0.0.2a"
 
 from . import pl
 from . import tl

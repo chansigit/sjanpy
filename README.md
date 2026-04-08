@@ -16,7 +16,7 @@ sjanpy follows the Scanpy subpackage convention:
 | `sjanpy.pl` | **Plotting** | Embedding, dot plot, bar plot, volcano plot, Nebulosa density |
 | `sjanpy.tl` | **Tools** | Differential expression, Pearson residuals normalization |
 | `sjanpy.pp` | **Preprocessing** | Gene filtering, stratified splitting, HVG selection |
-| `sjanpy.ml` | **Machine Learning** | h5ad I/O, standardization pipeline, chunked `.pt` dataset builder |
+| `sjanpy.ml` | **Machine Learning** | h5ad I/O, standardization pipeline, dataset builder (safetensors/pt), GPU/streaming datasets |
 
 ## Installation
 
@@ -147,17 +147,24 @@ complex_dotplot(
 
 | Function | Description |
 |---|---|
-| `build_dataset` | Stream h5ad → chunked `.pt` files with condition vectors |
+| `build_dataset` | Stream h5ad → safetensors or chunked `.pt` files with condition vectors |
 | `build_condition_schema` | Build encoding schema from condition DSL specs |
-| `process_file` | Process a single h5ad file into chunks |
+| `process_file` / `process_file_safetensors` | Process a single h5ad file into chunks |
 | `load_gene_list` / `resolve_gene_indices` | Gene list loading and index resolution |
 | `save_condition_schema` / `load_condition_schema` | Condition schema persistence |
+
+#### Dataset Classes (`sjanpy.ml.dataset`)
+
+| Class | Description |
+|---|---|
+| `GPUDataset` | Preload entire dataset to GPU for zero-transfer training |
+| `StreamingDataset` | Stream from disk via mmap for datasets that don't fit in RAM |
 
 ## Dependencies
 
 Core: `numpy`, `pandas`, `scipy`, `matplotlib`, `seaborn`, `scanpy`, `anndata`, `adjustText`, `statsmodels`, `scikit-learn`
 
-Optional: `plotly` (3D visualization), `torch` / `h5py` (ML dataset building)
+Optional: `plotly` (3D visualization), `torch` / `h5py` / `safetensors` (ML pipeline)
 
 ## License
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sjanpy"
-version = "0.0.1a"
+version = "0.0.2a"
 description = "Subjacent Analysis Toolkits for Single-Cell Omics in Python"
 readme = "README.md"
 license = "MIT"
@@ -40,6 +40,7 @@ dependencies = [
 ml = [
     "torch",
     "h5py",
+    "safetensors",
 ]
 dev = [
     "pytest",

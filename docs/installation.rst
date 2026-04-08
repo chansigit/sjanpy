@@ -10,6 +10,12 @@ From source
    cd sjanpy
    pip install .
 
+For ML pipeline support (``sjanpy.ml``):
+
+.. code-block:: bash
+
+   pip install ".[ml]"
+
 For development:
 
 .. code-block:: bash
@@ -32,3 +38,9 @@ sjanpy requires Python >= 3.8 and the following packages:
 - statsmodels
 - scikit-learn
 - plotly
+
+Optional (for ``sjanpy.ml``):
+
+- torch
+- h5py
+- safetensors

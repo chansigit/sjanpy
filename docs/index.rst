@@ -11,7 +11,8 @@ sjanpy follows the Scanpy subpackage convention:
 
 - **sjanpy.pl** -- Plotting: embeddings, dotplots, bar plots, volcano plots, Nebulosa density
 - **sjanpy.tl** -- Tools: differential expression analysis, Pearson residuals normalization
-- **sjanpy.pp** -- Preprocessing: organism-specific gene filtering
+- **sjanpy.pp** -- Preprocessing: gene filtering, stratified splitting, HVG selection
+- **sjanpy.ml** -- Machine Learning: h5ad I/O, standardization, dataset building (safetensors/pt), GPU/streaming datasets
 
 .. toctree::
    :maxdepth: 2
