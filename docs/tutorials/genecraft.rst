@@ -85,24 +85,37 @@ Choosing what to remove
 
 Each gene category can be toggled independently. Typical choices:
 
-+------------------------+-------------------+-------------------------------------------+
-| Parameter              | Default           | Rationale                                 |
-+========================+===================+===========================================+
-| remove_predicted       | True              | LOC/AC/AL clones add noise                |
-+------------------------+-------------------+-------------------------------------------+
-| remove_non_coding      | True              | LINC/MIR/SNOR rarely informative          |
-+------------------------+-------------------+-------------------------------------------+
-| remove_antisense       | True              | -AS transcripts confound analyses         |
-+------------------------+-------------------+-------------------------------------------+
-| remove_ig_var          | True              | IG variable regions dominate B cell PCA   |
-+------------------------+-------------------+-------------------------------------------+
-| remove_hb              | True              | Hemoglobin contamination                  |
-+------------------------+-------------------+-------------------------------------------+
-| remove_metallothionein | True              | Stress response artifact                  |
-+------------------------+-------------------+-------------------------------------------+
-| remove_mt_encoded      | **False**         | Keep for QC (% mitochondrial)             |
-+------------------------+-------------------+-------------------------------------------+
-| remove_ribo            | **False**         | Keep for QC (% ribosomal)                 |
-+------------------------+-------------------+-------------------------------------------+
-| remove_histone         | False             | Usually fine unless studying cell cycle    |
-+------------------------+-------------------+-------------------------------------------+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 15 55
+
+   * - Parameter
+     - Default
+     - Rationale
+   * - remove_predicted
+     - True
+     - LOC/AC/AL clones add noise
+   * - remove_non_coding
+     - True
+     - LINC/MIR/SNOR rarely informative
+   * - remove_antisense
+     - True
+     - \-AS transcripts confound analyses
+   * - remove_ig_var
+     - True
+     - IG variable regions dominate B cell PCA
+   * - remove_hb
+     - True
+     - Hemoglobin contamination
+   * - remove_metallothionein
+     - True
+     - Stress response artifact
+   * - remove_mt_encoded
+     - **False**
+     - Keep for QC (% mitochondrial)
+   * - remove_ribo
+     - **False**
+     - Keep for QC (% ribosomal)
+   * - remove_histone
+     - False
+     - Usually fine unless studying cell cycle
