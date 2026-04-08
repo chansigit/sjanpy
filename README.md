@@ -15,8 +15,8 @@ sjanpy follows the Scanpy subpackage convention:
 |---|---|---|
 | `sjanpy.pl` | **Plotting** | Embedding, dot plot, bar plot, volcano plot, Nebulosa density |
 | `sjanpy.tl` | **Tools** | Differential expression, Pearson residuals normalization |
-| `sjanpy.pp` | **Preprocessing** | Organism-specific gene filtering (human, mouse, rat) |
-| `sjanpy.ml` | **Machine Learning** | Chunked `.pt` dataset builder from h5ad files |
+| `sjanpy.pp` | **Preprocessing** | Gene filtering, stratified splitting, HVG selection |
+| `sjanpy.ml` | **Machine Learning** | h5ad I/O, standardization pipeline, chunked `.pt` dataset builder |
 
 ## Installation
 
@@ -119,14 +119,39 @@ complex_dotplot(
 | `filter_mouse_sc_genes` | Remove/mask artifact genes (mouse) |
 | `filter_rat_sc_genes` | Remove/mask artifact genes (rat) |
 | `get_background_gene_dict` | Catalog artifact gene categories in a dataset |
+| `stratified_split` | Two-stage stratified train/val/test splitting |
+| `prepare_hvg_sample` | Stratified subsample of training cells for HVG computation |
+| `compute_hvg` | Highly-variable gene selection with stratified sampling |
 
 ### `sjanpy.ml` — Machine Learning
+
+#### h5ad I/O (`sjanpy.ml.h5ad_io`)
+
+| Function | Description |
+|---|---|
+| `read_obs` / `read_var` | Read obs/var DataFrames from h5ad via h5py |
+| `locate_matrix` | Locate expression matrix path in h5ad |
+| `get_matrix_shape` | Get matrix dimensions without loading data |
+| `read_matrix_rows` | Read specific rows from dense/sparse matrices |
+| `read_sparse_chunk` | Read a chunk of a sparse matrix as CSR |
+| `validate_matrix_values` | Validate matrix values (NaN, Inf checks) |
+
+#### Standardization (`sjanpy.ml.standardize`)
+
+| Function | Description |
+|---|---|
+| `build_standardized_h5ads` | Build per-split standardized h5ad files (accumulate or streaming) |
+| `build_standardized_obs` | Build standardized obs with split assignments |
+
+#### Dataset Building (`sjanpy.ml.build_dataset`)
 
 | Function | Description |
 |---|---|
 | `build_dataset` | Stream h5ad → chunked `.pt` files with condition vectors |
 | `build_condition_schema` | Build encoding schema from condition DSL specs |
 | `process_file` | Process a single h5ad file into chunks |
+| `load_gene_list` / `resolve_gene_indices` | Gene list loading and index resolution |
+| `save_condition_schema` / `load_condition_schema` | Condition schema persistence |
 
 ## Dependencies
 
