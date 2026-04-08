@@ -95,3 +95,37 @@ class TestComputeHvg:
         assert isinstance(hvg_mask, np.ndarray)
         assert hvg_mask.dtype == bool
         assert len(hvg_mask) == 30  # dense_X.h5ad has 30 genes
+
+    def test_invalid_batch_key_raises(self, tmp_h5ad_dir):
+        from sjanpy.pp.hvg import compute_hvg
+        with pytest.raises(ValueError, match="batch_key"):
+            compute_hvg(
+                h5ad_path=tmp_h5ad_dir / "tiny.h5ad",
+                matrix_source="raw.X",
+                cell_indices=np.arange(10),
+                batch_key="nonexistent_column",
+            )
+
+
+# ---------------------------------------------------------------------------
+# TestMakeVarNamesUnique
+# ---------------------------------------------------------------------------
+
+class TestMakeVarNamesUnique:
+    def test_no_duplicates_unchanged(self):
+        from sjanpy.pp.hvg import _make_var_names_unique
+        var = pd.DataFrame(index=["A", "B", "C"])
+        result = _make_var_names_unique(var)
+        assert list(result.index) == ["A", "B", "C"]
+
+    def test_duplicates_get_suffix(self):
+        from sjanpy.pp.hvg import _make_var_names_unique
+        var = pd.DataFrame(index=["X", "X", "Y", "X"])
+        result = _make_var_names_unique(var)
+        assert list(result.index) == ["X", "X-1", "Y", "X-2"]
+
+    def test_empty_dataframe(self):
+        from sjanpy.pp.hvg import _make_var_names_unique
+        var = pd.DataFrame(index=[])
+        result = _make_var_names_unique(var)
+        assert len(result) == 0

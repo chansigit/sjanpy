@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from sjanpy.ml.standardize import build_standardized_obs, build_standardized_h5ads
+from sjanpy.ml.h5ad_io import read_obs, read_var
 
 
 # ---------------------------------------------------------------------------
@@ -45,10 +46,32 @@ class TestBuildStandardizedObs:
         lib = np.array([50.0, 60.0])
         result = build_standardized_obs(
             sample_obs, indices, "cell_type", "batch", "ds",
-            lib, extra_columns={"my_score": "score"},
+            lib, extra_columns={"score": "my_score"},
         )
         assert "my_score" in result.columns
         np.testing.assert_allclose(result["my_score"].values, [0.2, 0.4])
+
+    def test_extra_columns_src_to_dst_mapping(self):
+        """extra_columns keys are source columns, values are destination names."""
+        obs = pd.DataFrame({
+            "ct": ["A", "B", "C"],
+            "bt": ["X", "Y", "Z"],
+            "original_fine": ["A1", "B2", "C3"],
+            "original_major": ["grpA", "grpB", "grpC"],
+        }, index=["c0", "c1", "c2"])
+        result = build_standardized_obs(
+            obs, np.array([0, 1, 2]), "ct", "bt", "ds",
+            np.array([100.0, 200.0, 300.0]),
+            extra_columns={"original_fine": "cell_type_fine", "original_major": "cell_type_major"},
+        )
+        # Source column "original_fine" should map to output column "cell_type_fine"
+        assert "cell_type_fine" in result.columns
+        assert "cell_type_major" in result.columns
+        assert result["cell_type_fine"].tolist() == ["A1", "B2", "C3"]
+        assert result["cell_type_major"].tolist() == ["grpA", "grpB", "grpC"]
+        # Source column names should NOT appear in output
+        assert "original_fine" not in result.columns
+        assert "original_major" not in result.columns
 
     def test_missing_tissue_uses_dataset_name(self):
         obs_no_tissue = pd.DataFrame(
@@ -166,3 +189,85 @@ class TestBuildStandardizedH5ads:
             # Check obsm
             assert "X_umap" in a.obsm
             assert a.obsm["X_umap"].shape == (expected_n, 2)
+
+    def test_accumulate_streaming_equivalence(self, tmp_h5ad_dir, tmp_path):
+        """Both modes should produce cell-for-cell identical output."""
+        h5ad_path = tmp_h5ad_dir / "sparse_rawX.h5ad"
+        obs = read_obs(h5ad_path)
+        var = read_var(h5ad_path, "raw/var")
+        split_col = np.array(["train"] * 160 + ["val"] * 20 + ["test"] * 20)
+        hvg_mask = np.ones(len(var), dtype=bool)
+
+        out_acc = tmp_path / "acc"
+        out_acc.mkdir()
+        build_standardized_h5ads(
+            h5ad_path=h5ad_path, output_dir=out_acc, split_col=split_col,
+            hvg_mask=hvg_mask, all_var=var, obs=obs,
+            cell_type_col="cell_type", batch_key="batch", dataset_name="test",
+            matrix_source="raw.X", chunk_size=64, streaming=False,
+        )
+
+        out_str = tmp_path / "str"
+        out_str.mkdir()
+        build_standardized_h5ads(
+            h5ad_path=h5ad_path, output_dir=out_str, split_col=split_col,
+            hvg_mask=hvg_mask, all_var=var, obs=obs,
+            cell_type_col="cell_type", batch_key="batch", dataset_name="test",
+            matrix_source="raw.X", chunk_size=50, streaming=True,
+        )
+
+        for split in ["train", "val", "test"]:
+            a_acc = ad.read_h5ad(out_acc / f"{split}.h5ad")
+            a_str = ad.read_h5ad(out_str / f"{split}.h5ad")
+            assert a_acc.shape == a_str.shape, f"{split}: shape mismatch"
+            # Raw counts must be identical
+            np.testing.assert_array_equal(
+                a_acc.X.toarray(), a_str.X.toarray(),
+                err_msg=f"{split}: X mismatch"
+            )
+            # Normalized values must be very close (float32 precision)
+            np.testing.assert_allclose(
+                a_acc.layers["normalized"].toarray(),
+                a_str.layers["normalized"].toarray(),
+                rtol=1e-5,
+                err_msg=f"{split}: normalized mismatch"
+            )
+
+
+# ---------------------------------------------------------------------------
+# TestNormalizeCsr
+# ---------------------------------------------------------------------------
+
+class TestNormalizeCsr:
+    def test_matches_scanpy_normalization(self):
+        """Verify _normalize_csr matches scanpy's normalize_total + log1p."""
+        from sjanpy.ml.standardize import _normalize_csr
+        import scanpy as sc
+        from scipy.sparse import csr_matrix
+
+        rng = np.random.default_rng(99)
+        X = csr_matrix(rng.poisson(3, size=(50, 20)).astype(np.float32))
+
+        # Our implementation
+        result = _normalize_csr(X.copy(), target_sum=1e4)
+
+        # Scanpy reference
+        adata = sc.AnnData(X=X.copy().astype(np.float32))
+        sc.pp.normalize_total(adata, target_sum=1e4)
+        sc.pp.log1p(adata)
+        expected = csr_matrix(adata.X)
+
+        np.testing.assert_allclose(result.toarray(), expected.toarray(), rtol=1e-5)
+
+    def test_zero_rows_handled(self):
+        """Rows with all zeros should produce all-zero output (not NaN/inf)."""
+        from sjanpy.ml.standardize import _normalize_csr
+        from scipy.sparse import csr_matrix
+
+        # Row 1 is all zeros
+        X = csr_matrix(np.array([[1, 2, 3], [0, 0, 0], [4, 5, 6]], dtype=np.float32))
+        result = _normalize_csr(X.copy(), target_sum=1e4)
+
+        row1 = result[1].toarray().ravel()
+        assert np.all(row1 == 0), "Zero row should remain zero"
+        assert np.all(np.isfinite(result.toarray())), "No NaN or inf in output"

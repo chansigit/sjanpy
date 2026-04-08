@@ -98,6 +98,13 @@ class TestReadMatrixRows:
             assert issparse(result)
             assert result.shape == (3, 30)
 
+    def test_empty_indices(self, tmp_h5ad_dir):
+        """Empty row_indices should return (0, n_vars) matrix."""
+        with h5py.File(tmp_h5ad_dir / "sparse_rawX.h5ad", "r") as f:
+            mat, _, _ = locate_matrix(f, "raw.X")
+            result = read_matrix_rows(mat, np.array([], dtype=np.int64))
+            assert result.shape == (0, 50)
+
 
 # ──────────────────────────────────────────────────────────────────────
 # TestReadSparseChunk
@@ -124,6 +131,12 @@ class TestValidateMatrixValues:
         with h5py.File(tmp_h5ad_dir / "tiny.h5ad", "r") as f:
             mat, _, _ = locate_matrix(f, "X")
             assert validate_matrix_values(mat, "counts")
+
+    def test_counts_pass_dense(self, tmp_h5ad_dir):
+        """Dense integer matrix should pass counts validation."""
+        with h5py.File(tmp_h5ad_dir / "dense_X.h5ad", "r") as f:
+            mat, _, _ = locate_matrix(f, "X")
+            assert validate_matrix_values(mat, "counts", strict=True)
 
     def test_wrong_type_strict_raises(self, tmp_h5ad_dir):
         """Poisson counts flagged as 'normalized' should raise in strict mode."""

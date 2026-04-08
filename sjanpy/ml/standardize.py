@@ -76,8 +76,9 @@ def build_standardized_obs(
     }
 
     if extra_columns:
-        for dst, src in extra_columns.items():
-            out[dst] = sub[src].values
+        for src, dst in extra_columns.items():
+            if src in sub.columns:
+                out[dst] = sub[src].values
 
     return pd.DataFrame(out, index=sub.index)
 

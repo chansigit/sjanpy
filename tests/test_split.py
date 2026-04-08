@@ -83,3 +83,21 @@ def test_all_rare_types():
     result = stratified_split(obs, "cell_type")
 
     assert (result["split"] == "train").all()
+
+
+def test_zero_ratios_all_train():
+    """val_ratio=0, test_ratio=0 should put everything in train."""
+    obs = pd.DataFrame({"ct": ["A"] * 50 + ["B"] * 50},
+                       index=[f"c{i}" for i in range(100)])
+    result = stratified_split(obs, "ct", val_ratio=0, test_ratio=0)
+    assert (result["split"] == "train").all()
+
+
+def test_invalid_ratios_raise():
+    """Negative or >= 1.0 ratios should raise ValueError."""
+    obs = pd.DataFrame({"ct": ["A"] * 10}, index=[f"c{i}" for i in range(10)])
+
+    with pytest.raises(ValueError):
+        stratified_split(obs, "ct", val_ratio=-0.1, test_ratio=0.1)
+    with pytest.raises(ValueError):
+        stratified_split(obs, "ct", val_ratio=0.6, test_ratio=0.6)

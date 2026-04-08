@@ -42,6 +42,11 @@ def stratified_split(
         )
     n = len(obs)
     indices = np.arange(n)
+
+    # No held-out set requested — everything is train.
+    if held_out_ratio == 0:
+        return pd.DataFrame({"cell_index": indices, "split": "train"})
+
     labels = obs[stratify_col].values
 
     # Identify rare categories (count < 2) — always go to train.
