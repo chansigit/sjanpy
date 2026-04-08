@@ -42,7 +42,9 @@ def _build_var(all_var: pd.DataFrame, hvg_mask: np.ndarray, use_feature_name_as_
         names = var["feature_name"]
         valid = names.notna() & (names.astype(str).str.strip() != "")
         if valid.mean() > 0.5:
-            var.index = names.astype(str)
+            var.index = pd.Index(names.astype(str))
+            var.index.name = None
+            var = var.drop(columns=["feature_name"])
 
     return var
 
