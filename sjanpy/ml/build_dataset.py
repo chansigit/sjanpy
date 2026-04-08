@@ -1,48 +1,65 @@
 #!/usr/bin/env python3
 """
-Build chunked .pt datasets from h5ad files.
+Build PyTorch-ready datasets from h5ad files.
 
 Streams a single h5ad file via h5py (never loads full matrix), subsets to
-selected gene columns, builds condition vectors, and writes .pt chunk files
-+ metadata.json.
+selected gene columns, builds condition vectors, and writes output tensors.
+
+Two output formats:
+
+- **safetensors** (default): one `{split}.safetensors` file per split.
+  Enables fast DMA-based GPU loading via ``safetensors.torch.load_file(path, device="cuda")``.
+- **pt_chunks** (legacy): multiple ``chunk_NNNN.pt`` files per split.
+  For backward compatibility or streaming on very low-memory machines.
 
 Three ways to use
 -----------------
 
 1. As a library::
 
-    from sjanpy.ml import build_dataset, read_obs_h5py, build_condition_schema
+    from sjanpy.ml import build_dataset
+    import torch
 
     build_dataset(
         input_path="data/train.h5ad",
-        output_dir="chunks/train/",
+        output_dir="pt_chunks/",
         gene_list=None, gene_col="highly_variable",
         label_col="cell_type",
         numerical_specs=[], cat_specs=[{"source": "batch", "encoding": "onehot"}],
         chunk_size=50000,
-        save_schema_path="condition-schema.json",
+        save_schema_path="pt_chunks/condition-schema.json",
         load_schema_path=None,
+        output_format="safetensors",    # or "pt_chunks"
+        counts_dtype=torch.bfloat16,    # or None for fp32
     )
 
 2. As a CLI module::
 
+    # safetensors + bf16 (recommended)
     python -m sjanpy.ml.build_dataset \
-        --h5ad-input data/train.h5ad --output chunks/train/ \
+        --h5ad-input data/train.h5ad --output pt_chunks/ \
         --gene-col highly_variable --cell-type-label-col cell_type \
-        --cat-cond "batch:onehot" --save-schema condition-schema.json
+        --cat-cond "batch:onehot" --format safetensors --counts-dtype bf16 \
+        --save-schema pt_chunks/condition-schema.json
 
-3. Via the experiment wrapper script::
-
-    python 0_build_dataset.py \
-        --h5ad-input data/train.h5ad --output chunks/train/ \
+    # val/test: reuse train's schema
+    python -m sjanpy.ml.build_dataset \
+        --h5ad-input data/val.h5ad --output pt_chunks/ \
         --gene-col highly_variable --cell-type-label-col cell_type \
-        --cat-cond "batch:onehot" --save-schema condition-schema.json
+        --load-schema pt_chunks/condition-schema.json \
+        --format safetensors --counts-dtype bf16
+
+    # legacy pt_chunks format
+    python -m sjanpy.ml.build_dataset \
+        --h5ad-input data/train.h5ad --output pt_chunks/train/ \
+        --format pt_chunks --counts-dtype fp32 ...
 
 CLI flags
 ---------
 
 --h5ad-input          Path to a single h5ad file.
---output              Output directory for .pt chunks and metadata.json.
+--output              Output directory. safetensors writes {stem}.safetensors here;
+                      pt_chunks writes chunk_NNNN.pt files here.
 --gene-list           Gene list file (txt one-per-line, or JSON with 'genes'/'hvg_genes' key).
 --gene-col            Boolean column in var to filter genes (e.g. 'highly_variable').
 --cell-type-label-col Obs column for cell type labels. Omit to skip labels.
@@ -50,8 +67,9 @@ CLI flags
 --numerical-cond      Numerical condition spec. Repeatable. E.g. 'library_size:log1p:zscore'.
 --save-schema         Save condition schema + label mapping to JSON (use on train).
 --load-schema         Load schema from JSON (use on val/test to reuse train stats).
---format              Output format: 'safetensors' (default, single file) or 'pt_chunks' (legacy).
+--format              Output format: 'safetensors' (default) or 'pt_chunks' (legacy).
 --counts-dtype        Dtype for counts: 'fp32' (default), 'bf16', or 'fp16'.
+                      bf16 halves disk/memory with negligible precision loss for UMI counts.
 --chunk-size          Cells per read-chunk when streaming h5ad (default 50000).
 """
 
@@ -699,7 +717,7 @@ def build_dataset(input_path, output_dir, gene_list, gene_col, label_col,
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Build chunked .pt datasets from h5ad files",
+        description="Build PyTorch-ready datasets from h5ad files (safetensors or pt_chunks)",
         epilog=(
             "Three ways to use this tool:\n"
             "  1. Library:  from sjanpy.ml import build_dataset\n"
@@ -714,7 +732,8 @@ def main():
     )
     parser.add_argument(
         "--output", required=True,
-        help="Output directory for .pt chunks and metadata.json",
+        help="Output directory. safetensors: writes {stem}.safetensors + metadata.json here. "
+             "pt_chunks: writes chunk_NNNN.pt + metadata.json here.",
     )
 
     # Gene filtering (mutually exclusive)
