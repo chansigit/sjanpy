@@ -827,7 +827,7 @@ def scib_metrics(
         latent = load_latent("outputs/my_run")
         obs = load_split_obs("data/ds_skin")
         results = scib_metrics(latent, obs)
-        print(results["overall_score"])  # 0.4 * batch + 0.6 * bio
+        print(results["scib_overall"])  # 0.4 * batch + 0.6 * bio
 
     Args:
         X: Latent embedding, shape ``(n_cells, n_dims)``.
@@ -879,9 +879,13 @@ def scib_metrics(
             if iso_mask.sum() > 10:
                 iso_dist = dist_matrix[np.ix_(iso_mask, iso_mask)]
                 iso_labels = sil_obs.loc[iso_mask, label_key].values
-                results["isolated_label_asw"] = float(
-                    silhouette_score(iso_dist, iso_labels, metric="precomputed")
-                )
+                n_unique = len(np.unique(iso_labels))
+                if n_unique >= 2:
+                    results["isolated_label_asw"] = float(
+                        silhouette_score(iso_dist, iso_labels, metric="precomputed")
+                    )
+                else:
+                    results["isolated_label_asw"] = np.nan
             else:
                 results["isolated_label_asw"] = np.nan
         else:
@@ -927,7 +931,7 @@ def scib_metrics(
     bio_score = float(np.mean(bio_vals)) if bio_vals else np.nan
     results["batch_score"] = batch_score
     results["bio_score"] = bio_score
-    results["overall_score"] = float(0.4 * batch_score + 0.6 * bio_score) if (
+    results["scib_overall"] = float(0.4 * batch_score + 0.6 * bio_score) if (
         not np.isnan(batch_score) and not np.isnan(bio_score)
     ) else np.nan
 
