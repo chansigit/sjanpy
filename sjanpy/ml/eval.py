@@ -873,3 +873,153 @@ def scib_metrics(
     results["n_metrics_bio"] = len(bio_vals)
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# scGraph (Islander) metrics
+# ---------------------------------------------------------------------------
+
+
+def scgraph_score(
+    latent: np.ndarray,
+    adata_path: str | Path | None = None,
+    adata=None,
+    batch_key: str = "batch",
+    label_key: str = "cell_type",
+    trim_rate: float = 0.05,
+    thres_batch: int = 100,
+    thres_celltype: int = 10,
+) -> dict:
+    """Compute scGraph embedding quality metrics (Wang et al., Nature Biotech 2025).
+
+    Self-contained reimplementation (no scgraph_bench dependency). Evaluates
+    how well an embedding preserves cell-type relationships by comparing
+    pairwise centroid distances against a PCA-based consensus built
+    independently per batch.
+
+    Requires the original gene expression matrix to build the PCA consensus.
+    Provide either ``adata`` or ``adata_path``.
+
+    Args:
+        latent: Latent embedding, shape ``(n_cells, n_dims)``.
+        adata_path: Path to h5ad file(s). Can also be a directory containing
+            ``train.h5ad`` + ``val.h5ad``.
+        adata: AnnData with expression in ``.X`` and obs metadata.
+        batch_key: Column name for batch information.
+        label_key: Column name for cell type labels.
+        trim_rate: Trim proportion for robust centroid calculation.
+        thres_batch: Minimum cells per batch.
+        thres_celltype: Minimum cells per cell type.
+
+    Returns:
+        Dict with ``corr_weighted`` (main metric), ``corr_pca``,
+        ``rank_pca``.
+    """
+    import scanpy as sc
+    from scipy.spatial.distance import cdist
+    from scipy.stats import trim_mean
+
+    # --- Load data ---
+    if adata is None:
+        if adata_path is None:
+            raise ValueError("Provide either adata or adata_path")
+        p = Path(adata_path)
+        if p.is_dir():
+            import anndata as ad
+            parts = [sc.read_h5ad(str(p / f"{s}.h5ad")) for s in ("train", "val") if (p / f"{s}.h5ad").exists()]
+            adata = ad.concat(parts)
+        else:
+            adata = sc.read_h5ad(str(p))
+    else:
+        adata = adata.copy()
+
+    # Normalize if raw counts
+    x = adata.X
+    xmax = x.data.max() if sparse.issparse(x) and x.nnz > 0 else (x.max() if not sparse.issparse(x) else 0)
+    if xmax > 20:
+        sc.pp.normalize_total(adata, target_sum=1e4)
+        sc.pp.log1p(adata)
+
+    labels = adata.obs[label_key]
+    batches = adata.obs[batch_key]
+
+    # Filter rare cell types
+    ct_counts = labels.value_counts()
+    ignore_ct = set(ct_counts[ct_counts < thres_celltype].index)
+
+    # --- Helpers ---
+    def _trimmed_centroids(X, labs):
+        if sparse.issparse(X):
+            X = X.toarray()
+        centroids = {}
+        for lab in sorted(labs.unique()):
+            if lab in ignore_ct:
+                continue
+            centroids[lab] = trim_mean(X[labs == lab], proportiontocut=trim_rate, axis=0)
+        return centroids
+
+    def _pairwise_dist_df(centroids):
+        keys = sorted(centroids.keys())
+        vecs = np.array([centroids[k] for k in keys])
+        dist = cdist(vecs, vecs, "euclidean")
+        df = pd.DataFrame(dist, index=keys, columns=keys)
+        return df.div(df.max(axis=0), axis=1)
+
+    # --- Build PCA consensus (per-batch HVG → PCA → centroids → distances) ---
+    pca_dists = {}
+    for batch in batches.unique():
+        adata_b = adata[batches == batch].copy()
+        if len(adata_b) < thres_batch:
+            continue
+        sc.pp.highly_variable_genes(adata_b, n_top_genes=min(1000, adata_b.n_vars))
+        sc.pp.pca(adata_b, n_comps=10, use_highly_variable=True)
+        centroids = _trimmed_centroids(adata_b.obsm["X_pca"], adata_b.obs[label_key])
+        if len(centroids) < 2:
+            continue
+        pca_dists[batch] = _pairwise_dist_df(centroids)
+
+    if not pca_dists:
+        return {"corr_weighted": np.nan, "corr_pca": np.nan, "rank_pca": np.nan}
+
+    # Average across batches
+    consensus = pd.concat(pca_dists.values()).groupby(level=0).mean()
+    consensus = consensus.loc[consensus.columns, :]
+    consensus = consensus.div(consensus.max(axis=0), axis=1)
+
+    # --- Evaluate embedding ---
+    emb_centroids = _trimmed_centroids(latent[:len(adata)], labels)
+    emb_dist = _pairwise_dist_df(emb_centroids)
+
+    # Align columns
+    shared = sorted(set(consensus.columns) & set(emb_dist.columns))
+    if len(shared) < 2:
+        return {"corr_weighted": np.nan, "corr_pca": np.nan, "rank_pca": np.nan}
+    cons = consensus.loc[shared, shared]
+    emb = emb_dist.loc[shared, shared]
+
+    # --- Compute correlations (per cell-type column, then average) ---
+    rank_pca, corr_pca, corr_w = [], [], []
+    for col in shared:
+        c, e = cons[col].dropna(), emb[col].dropna()
+        common = c.index.intersection(e.index)
+        if len(common) < 2:
+            continue
+        cv, ev = c[common], e[common]
+        rank_pca.append(cv.corr(ev, method="spearman"))
+        corr_pca.append(cv.corr(ev, method="pearson"))
+        # Weighted Pearson (weight = 1/distance from consensus)
+        d = cv.values.astype(float)
+        w = np.where(d > 0, 1.0 / d, 0.0)
+        w /= w.sum() if w.sum() > 0 else 1.0
+        mx = np.average(cv, weights=w)
+        my = np.average(ev, weights=w)
+        cov = np.sum(w * (cv - mx) * (ev - my))
+        vx = np.sum(w * (cv - mx) ** 2)
+        vy = np.sum(w * (ev - my) ** 2)
+        corr_w.append(cov / np.sqrt(vx * vy) if vx * vy > 0 else 0.0)
+
+    return {
+        "corr_weighted": float(np.nanmean(corr_w)) if corr_w else np.nan,
+        "corr_pca": float(np.nanmean(corr_pca)) if corr_pca else np.nan,
+        "rank_pca": float(np.nanmean(rank_pca)) if rank_pca else np.nan,
+    }

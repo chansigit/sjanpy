@@ -56,6 +56,8 @@ from .eval import (
     batch_integration_report,
     # scIB benchmark
     scib_metrics,
+    # scGraph (Islander) metrics
+    scgraph_score,
 )
 
 # Backward compatibility: old names from build_dataset
