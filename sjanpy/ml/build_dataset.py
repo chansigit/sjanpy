@@ -535,35 +535,45 @@ def process_file(h5ad_path, output_dir, gene_indices, n_total_genes,
 def process_file_safetensors(h5ad_path, output_path, gene_indices, n_total_genes,
                              condition_columns, n_cond, label_col, label_to_idx,
                              obs_df, chunk_size, counts_dtype=None):
-    """Stream h5ad → accumulate → write a single .safetensors file.
+    """Stream h5ad → pre-allocated tensors → write a single .safetensors file.
+
+    Pre-allocates output tensors based on the known total cell count, then
+    fills them chunk-by-chunk.  Peak memory ≈ 1× the final tensor size
+    (no temporary list of chunks or torch.cat copy).
 
     Args:
-        output_path: path to the .safetensors file (e.g. "pt_chunks/train.safetensors")
+        output_path: path to the .safetensors file (e.g. "train/train.safetensors")
     """
     from safetensors.torch import save_file
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    all_counts, all_cond, all_labels = [], [], []
+    n_cells = len(obs_df)
+    n_genes = len(gene_indices)
+    ct_dtype = counts_dtype if counts_dtype is not None else torch.float32
+
+    # Pre-allocate contiguous tensors (no accumulation, no torch.cat)
+    counts_out = torch.empty(n_cells, n_genes, dtype=ct_dtype)
+    cond_out = torch.empty(n_cells, n_cond, dtype=torch.float32)
+    labels_out = torch.empty(n_cells, dtype=torch.long)
+
+    cursor = 0
     for counts, cond, labels in _stream_h5ad_to_tensors(
         h5ad_path, gene_indices, n_total_genes,
         condition_columns, n_cond, label_col, label_to_idx,
         obs_df, chunk_size, counts_dtype,
     ):
-        all_counts.append(counts)
-        all_cond.append(cond)
-        all_labels.append(labels)
-
-    counts_cat = torch.cat(all_counts)
-    cond_cat = torch.cat(all_cond)
-    labels_cat = torch.cat(all_labels)
-    n_cells = len(counts_cat)
+        n = len(counts)
+        counts_out[cursor:cursor + n] = counts
+        cond_out[cursor:cursor + n] = cond
+        labels_out[cursor:cursor + n] = labels
+        cursor += n
 
     print(f"  Writing {output_path} ({n_cells:,} cells, "
-          f"counts {counts_cat.dtype}, {counts_cat.nelement() * counts_cat.element_size() / 1e9:.1f}GB)")
+          f"counts {counts_out.dtype}, {counts_out.nelement() * counts_out.element_size() / 1e9:.1f}GB)")
 
-    save_file({"counts": counts_cat, "condition": cond_cat, "labels": labels_cat}, str(output_path))
+    save_file({"counts": counts_out, "condition": cond_out, "labels": labels_out}, str(output_path))
 
     return {"n_cells": n_cells}
 
