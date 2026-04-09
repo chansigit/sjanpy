@@ -62,20 +62,37 @@ def load_latent(
 ) -> np.ndarray:
     """Load latent embeddings from a run directory.
 
-    Checks ``<run_dir>/<eval_subdir>/qz_mean.npy`` first, then falls back to
-    concatenating ``<run_dir>/train_latent.npy`` + ``<run_dir>/val_latent.npy``.
+    Checks (in order):
+    1. ``<run_dir>/<eval_subdir>/benchmark_qz_mean.npy`` — test-split benchmark latent
+    2. ``<run_dir>/<eval_subdir>/analysis_qz_mean.npy`` — test-split analysis latent
+    3. ``<run_dir>/train_qz_mean.npy`` + ``<run_dir>/val_qz_mean.npy`` — training-time latent
+
+    Legacy names (``qz_mean.npy``, ``train_latent.npy``, ``val_latent.npy``)
+    are also checked for backward compatibility.
     """
     run_dir = Path(run_dir)
-    qz_path = run_dir / eval_subdir / "qz_mean.npy"
-    if qz_path.exists():
-        return np.load(qz_path)
-    train_path = run_dir / "train_latent.npy"
-    val_path = run_dir / "val_latent.npy"
-    if train_path.exists() and val_path.exists():
-        return np.concatenate([np.load(train_path), np.load(val_path)], axis=0)
+    eval_dir = run_dir / eval_subdir
+
+    # Test-split latent (preferred)
+    for name in ("benchmark_qz_mean.npy", "analysis_qz_mean.npy", "qz_mean.npy"):
+        p = eval_dir / name
+        if p.exists():
+            return np.load(p)
+
+    # Training-time latent (fallback)
+    for train_name, val_name in [
+        ("train_qz_mean.npy", "val_qz_mean.npy"),
+        ("train_latent.npy", "val_latent.npy"),
+    ]:
+        train_path = run_dir / train_name
+        val_path = run_dir / val_name
+        if train_path.exists() and val_path.exists():
+            return np.concatenate([np.load(train_path), np.load(val_path)], axis=0)
+
     raise FileNotFoundError(
         f"No latent embeddings found in {run_dir}. "
-        "Expected qz_mean.npy or train_latent.npy + val_latent.npy"
+        "Expected benchmark_qz_mean.npy, analysis_qz_mean.npy, "
+        "or train_qz_mean.npy + val_qz_mean.npy"
     )
 
 
