@@ -16,7 +16,7 @@ sjanpy follows the Scanpy subpackage convention:
 | `sjanpy.pl` | **Plotting** | Embedding, dot plot, bar plot, volcano plot, Nebulosa density |
 | `sjanpy.tl` | **Tools** | Differential expression, Pearson residuals normalization |
 | `sjanpy.pp` | **Preprocessing** | Gene filtering, stratified splitting, HVG selection |
-| `sjanpy.ml` | **Machine Learning** | h5ad I/O, standardization pipeline, dataset builder (safetensors/pt), GPU/streaming datasets |
+| `sjanpy.ml` | **Machine Learning** | h5ad I/O, standardization pipeline, dataset builder (safetensors/pt), GPU/streaming datasets, embedding evaluation |
 
 ## Installation
 
@@ -61,6 +61,27 @@ nebulosa_density(adata, coord_key='X_umap', gene='CD3D', show=True)
 | Standard scatter | Nebulosa density |
 |---|---|
 | <img width="328" alt="before" src="https://github.com/user-attachments/assets/4c481b00-583b-4e7e-b064-95db59160024" /> | <img width="328" alt="after" src="https://github.com/user-attachments/assets/d4e2cc47-7d73-40d1-9b81-8360083780d1" /> |
+
+### Embedding evaluation (scIB + scGraph)
+
+```python
+from sjanpy.ml.eval import (
+    load_latent, load_split_obs, build_knn_graph,
+    scib_metrics, scgraph_score,
+)
+
+latent = load_latent("outputs/my_run")               # (n_cells, n_latent)
+obs = load_split_obs("data/ds_skin")                  # batch, cell_type, ...
+
+# scIB benchmark: 9 metrics + overall score (~5s on H100)
+knn_idx, knn_dist = build_knn_graph(latent, n_neighbors=90)
+results = scib_metrics(latent, obs, knn_indices=knn_idx, knn_distances=knn_dist)
+print(results["overall_score"])   # 0.4 * batch_score + 0.6 * bio_score
+
+# scGraph benchmark: centroid distance correlation (~2s)
+sg = scgraph_score(latent, adata_path="data/ds_skin")
+print(sg["corr_weighted"])        # main scGraph metric
+```
 
 ### Gene filtering
 
@@ -153,6 +174,26 @@ complex_dotplot(
 | `load_gene_list` / `resolve_gene_indices` | Gene list loading and index resolution |
 | `save_condition_schema` / `load_condition_schema` | Condition schema persistence |
 
+#### Embedding Evaluation (`sjanpy.ml.eval`)
+
+GPU-accelerated, self-contained metrics for benchmarking latent embeddings. No C extensions or JAX needed.
+
+| Function | Description |
+|---|---|
+| `build_knn_graph` | kNN via GPU matmul (cosine) or pynndescent (any metric), auto-selected |
+| `knn_to_sparse` | Convert kNN arrays to sparse connectivity matrix |
+| `fit_umap` | UMAP with precomputed kNN support |
+| `scib_metrics` | **9 scIB metrics + overall score** (Luecken et al., *Nat Methods* 2022) |
+| `scgraph_score` | **Corr-Weighted / Corr-PCA / Rank-PCA** (Wang et al., *Nat Biotech* 2025) |
+| `batch_integration_report` | Quick report: ASW + graph connectivity + Leiden NMI/ARI |
+| `lisi` / `ilisi` / `clisi` | Local Inverse Simpson's Index (GPU-accelerated, validated vs scib) |
+| `kbet` | k-nearest-neighbor Batch Effect Test (vectorized chi-squared) |
+| `batch_asw` / `celltype_asw` | Silhouette scores with GPU pairwise distances |
+| `graph_connectivity` | Per-label connected components (scIB-compatible) |
+| `leiden_nmi_ari` | Leiden clustering + NMI/ARI vs true labels |
+| `load_latent` / `load_split_obs` | Load embeddings and metadata from run directories |
+| `subsample_indices` | Random subsample for O(n^2) operations |
+
 #### Dataset Classes (`sjanpy.ml.dataset`)
 
 | Class | Description |
@@ -164,7 +205,7 @@ complex_dotplot(
 
 Core: `numpy`, `pandas`, `scipy`, `matplotlib`, `seaborn`, `scanpy`, `anndata`, `adjustText`, `statsmodels`, `scikit-learn`
 
-Optional: `plotly` (3D visualization), `torch` / `h5py` / `safetensors` (ML pipeline)
+Optional: `plotly` (3D visualization), `torch` / `h5py` / `safetensors` (ML pipeline), `pynndescent` / `umap-learn` (eval kNN/UMAP), `torch`+CUDA (GPU-accelerated kNN, pairwise distances, LISI)
 
 ## License
 

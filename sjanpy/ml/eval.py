@@ -1,12 +1,39 @@
-"""Reusable evaluation utilities for latent embedding analysis.
+"""Evaluation toolkit for single-cell latent embeddings.
 
-Provides:
-  - Data loading: load_latent, load_split_obs
-  - Subsampling: subsample_indices
-  - kNN graph: build_knn_graph (pynndescent, cuML auto-switch)
-  - UMAP: fit_umap (with precomputed kNN support)
-  - Batch integration metrics: batch_asw, celltype_asw, graph_connectivity,
-    leiden_nmi_ari, batch_integration_report
+Provides GPU-accelerated, self-contained metrics for benchmarking batch
+integration and biological conservation in latent spaces — compatible with
+the scIB framework (Luecken et al., *Nature Methods* 2022) and the scGraph
+benchmark (Wang et al., *Nature Biotechnology* 2025).
+
+Key design choices:
+
+* **No C extensions** — pure Python/NumPy/PyTorch; works on old glibc.
+* **GPU-first** — pairwise distances via PyTorch ``matmul``, LISI binary
+  search parallelized across all cells on GPU (6x faster than CPU).
+* **kNN sharing** — build once with :func:`build_knn_graph`, reuse for
+  UMAP, LISI, kBET, graph connectivity, and Leiden clustering.
+* **O(n²) isolation** — silhouette scores use a separate subsample
+  (default 50k) so kNN-based metrics can run on the full dataset.
+
+Functions
+---------
+Data loading
+    :func:`load_latent`, :func:`load_split_obs`
+Subsampling
+    :func:`subsample_indices`
+kNN graph
+    :func:`build_knn_graph` (GPU matmul or pynndescent, auto-selected),
+    :func:`knn_to_sparse`
+UMAP
+    :func:`fit_umap` (precomputed kNN support)
+Individual metrics
+    :func:`batch_asw`, :func:`celltype_asw`, :func:`graph_connectivity`,
+    :func:`lisi`, :func:`ilisi`, :func:`clisi`, :func:`kbet`,
+    :func:`leiden_nmi_ari`
+Aggregate benchmarks
+    :func:`batch_integration_report` — quick ASW + graph + Leiden report
+    :func:`scib_metrics` — 9 scIB metrics + overall score (0.4 batch + 0.6 bio)
+    :func:`scgraph_score` — Corr-Weighted / Corr-PCA / Rank-PCA
 """
 
 from __future__ import annotations
@@ -86,7 +113,11 @@ def subsample_indices(
     max_cells: int = 50_000,
     seed: int = 42,
 ) -> np.ndarray | None:
-    """Return random subsample indices, or None if n <= max_cells."""
+    """Return random subsample indices, or ``None`` if *n* <= *max_cells*.
+
+    Used to cap O(n^2) operations (silhouette, pairwise distances) while
+    letting O(n*k) metrics (LISI, kBET, Leiden) run on the full dataset.
+    """
     if n <= max_cells:
         return None
     return np.random.RandomState(seed).choice(n, max_cells, replace=False)
@@ -272,7 +303,11 @@ def batch_asw(
     X: np.ndarray, labels, metric: str = "cosine",
     precomputed_dist: np.ndarray | None = None,
 ) -> float | None:
-    """Average silhouette width by batch label (lower → better mixing)."""
+    """Average silhouette width by batch label (lower is better mixing).
+
+    Accepts a precomputed distance matrix to avoid redundant O(n^2) work
+    when computing both batch and cell-type ASW.
+    """
     labels = np.asarray(labels)
     if len(np.unique(labels)) < 2:
         return None
@@ -285,7 +320,10 @@ def celltype_asw(
     X: np.ndarray, labels, metric: str = "cosine",
     precomputed_dist: np.ndarray | None = None,
 ) -> float | None:
-    """Average silhouette width by cell type (higher → better bio conservation)."""
+    """Average silhouette width by cell type (higher is better conservation).
+
+    Same interface as :func:`batch_asw`; see that function for details.
+    """
     labels = np.asarray(labels)
     if len(np.unique(labels)) < 2:
         return None
@@ -762,20 +800,49 @@ def scib_metrics(
 ) -> dict:
     """Compute scIB-compatible metrics from latent embeddings + obs.
 
-    All implementations are self-contained (no scib C extensions needed).
-    kNN-based metrics are fully vectorized. Silhouette uses GPU-accelerated
-    pairwise distances with a separate subsample.
+    Self-contained reimplementation of the scIB benchmark (Luecken et al.,
+    *Nature Methods* 2022). No C extensions or JAX required — works on any
+    platform with NumPy and (optionally) PyTorch+CUDA.
 
-    Batch correction (4/5):
-        batch_asw, graph_connectivity, kBET, iLISI.
-        (PCR skipped — needs unintegrated adata.)
+    Computes 9 of the 14 scIB metrics — the ones derivable from a latent
+    embedding and cell metadata alone:
 
-    Bio conservation (5/9):
-        celltype_asw, NMI, ARI, cLISI, isolated_label_asw.
-        (Isolated F1, cell cycle, HVG, trajectory — need extra data.)
+    **Batch correction** (4 of 5; PCR skipped — needs unintegrated adata):
+        ``batch_asw``, ``graph_connectivity``, ``kBET``, ``iLISI``
+
+    **Bio conservation** (5 of 9; cell cycle, HVG overlap, isolated F1,
+    trajectory skipped — need extra annotations):
+        ``celltype_asw``, ``NMI``, ``ARI``, ``cLISI``, ``isolated_label_asw``
+
+    **Overall score** = 0.4 * mean(batch metrics) + 0.6 * mean(bio metrics)
+
+    Performance (14.7k cells, H100):
+        ~5s total. LISI binary search runs on GPU; pairwise distances for
+        silhouette computed via GPU matmul; kBET fully vectorized.
+
+    Example::
+
+        from sjanpy.ml.eval import load_latent, load_split_obs, scib_metrics
+
+        latent = load_latent("outputs/my_run")
+        obs = load_split_obs("data/ds_skin")
+        results = scib_metrics(latent, obs)
+        print(results["overall_score"])  # 0.4 * batch + 0.6 * bio
+
+    Args:
+        X: Latent embedding, shape ``(n_cells, n_dims)``.
+        obs: Cell metadata with ``batch_key`` and ``label_key`` columns.
+        knn_indices: Precomputed kNN indices from :func:`build_knn_graph`.
+        knn_distances: Precomputed kNN distances.
+        n_neighbors: Number of neighbors (used only if kNN not provided).
+        metric: Distance metric for kNN and silhouette.
+        batch_key: Column name for batch labels in *obs*.
+        label_key: Column name for cell-type labels in *obs*.
+        max_cells_silhouette: Cap for silhouette subsample (O(n^2) guard).
+        resolution: Leiden clustering resolution.
 
     Returns:
-        Dict with individual metrics + ``overall_score`` (Luecken 2022).
+        JSON-serializable dict with all metrics, sub-scores, and metadata.
     """
     n = len(X)
 
