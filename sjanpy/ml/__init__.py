@@ -37,6 +37,27 @@ from .dataset import (
     StreamingDataset,
 )
 
+from .eval import (
+    # Data loading
+    load_latent,
+    load_split_obs,
+    # Subsampling
+    subsample_indices,
+    # kNN graph
+    build_knn_graph,
+    knn_to_sparse,
+    # UMAP
+    fit_umap,
+    # Batch integration metrics
+    batch_asw,
+    celltype_asw,
+    graph_connectivity,
+    leiden_nmi_ari,
+    batch_integration_report,
+    # scIB benchmark
+    scib_metrics,
+)
+
 # Backward compatibility: old names from build_dataset
 from .h5ad_io import read_obs as read_obs_h5py
 from .h5ad_io import read_var as read_var_h5py
