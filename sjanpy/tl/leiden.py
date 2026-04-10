@@ -8,7 +8,7 @@ existing pipelines can switch by replacing ``sc.tl.leiden`` with
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
@@ -21,11 +21,15 @@ if TYPE_CHECKING:
 
 def _resolve_adjacency(
     adata: "AnnData",
-    adjacency: sp.spmatrix | None,
+    adjacency: Any,
     neighbors_key: str | None,
     obsp: str | None,
-) -> sp.spmatrix:
-    """Resolve which sparse adjacency matrix to use (scanpy priority order)."""
+) -> Any:
+    """Resolve which adjacency matrix to use (scanpy priority order).
+
+    Returns an arbitrary array-like (typically a scipy sparse matrix). The
+    caller normalizes it to CSR via :func:`scipy.sparse.csr_matrix`.
+    """
     if adjacency is not None and obsp is not None:
         raise ValueError("Cannot specify both `adjacency` and `obsp`.")
     if adjacency is not None and neighbors_key is not None:
@@ -60,14 +64,14 @@ def leiden(
     *,
     random_state: int = 0,
     key_added: str = "leiden",
-    adjacency: sp.spmatrix | None = None,
+    adjacency: Any = None,
     directed: bool | None = None,
     use_weights: bool = True,
     n_iterations: int = -1,
     neighbors_key: str | None = None,
     obsp: str | None = None,
     copy: bool = False,
-    flavor: Literal["gpu"] = "gpu",
+    flavor: str = "gpu",
     **clustering_args: Any,
 ) -> "AnnData | None":
     """Cluster cells into subgroups using the GPU Leiden algorithm.
@@ -122,7 +126,11 @@ def leiden(
     ``None`` if ``copy=False``, otherwise an ``AnnData`` copy with
     ``obs[key_added]`` set.
     """
-    import gpu_leiden
+    import gpu_leiden  # type: ignore[import-not-found]
+
+    # `directed` and `**clustering_args` are accepted for scanpy API parity
+    # but not used by the GPU backend.
+    del directed, clustering_args
 
     if flavor != "gpu":
         raise ValueError(
@@ -133,10 +141,10 @@ def leiden(
     if copy:
         adata = adata.copy()
 
-    adj = _resolve_adjacency(adata, adjacency, neighbors_key, obsp)
+    adj_raw = _resolve_adjacency(adata, adjacency, neighbors_key, obsp)
 
-    if not sp.issparse(adj):
-        adj = sp.csr_matrix(adj)
+    # Normalize to CSR so `.data` / `.copy()` are always available downstream.
+    adj: sp.csr_matrix = sp.csr_matrix(adj_raw)
 
     if not use_weights:
         # Replace all edge weights with 1.0 (matches scanpy behavior)

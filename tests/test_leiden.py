@@ -4,7 +4,6 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import pytest
-import scipy.sparse as sp
 
 pytest.importorskip("gpu_leiden")
 pytest.importorskip("anndata")
@@ -13,7 +12,7 @@ pytest.importorskip("scanpy")
 import anndata as ad
 import scanpy as sc
 
-import sjanpy
+import sjanpy  # type: ignore[import-not-found]
 
 
 def _make_adata_with_neighbors(n_cells: int = 300, n_genes: int = 50, seed: int = 42):
