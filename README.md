@@ -14,7 +14,7 @@ sjanpy follows the Scanpy subpackage convention:
 | Subpackage | Purpose | Key Functions |
 |---|---|---|
 | `sjanpy.pl` | **Plotting** | Embedding, dot plot, bar plot, volcano plot, Nebulosa density |
-| `sjanpy.tl` | **Tools** | Differential expression, Pearson residuals normalization |
+| `sjanpy.tl` | **Tools** | GPU Leiden clustering, differential expression, Pearson residuals normalization |
 | `sjanpy.pp` | **Preprocessing** | Gene filtering, stratified splitting, HVG selection |
 | `sjanpy.ml` | **Machine Learning** | h5ad I/O, standardization pipeline, dataset builder (safetensors/pt), GPU/streaming datasets, embedding evaluation |
 
@@ -27,6 +27,58 @@ pip install .
 ```
 
 ## Quick Start
+
+### GPU-accelerated Leiden clustering
+
+`sjanpy.tl.gpuleiden` is a drop-in replacement for `scanpy.tl.leiden` backed
+by the [`gpu_leiden`](https://github.com/chansigit/gpu-leiden) CUDA kernel.
+It is **3–10× faster** than leidenalg and reaches comparable modularity via
+an optional quality flavor with iterated local search.
+
+```python
+import scanpy as sc
+import sjanpy
+
+adata = sc.datasets.pbmc3k_processed()
+sc.pp.neighbors(adata)
+
+# deterministic — bit-reproducible, ~10x faster than leidenalg
+sjanpy.tl.gpuleiden(adata, resolution=1.0, random_state=42)
+
+# quality — ILS shake-kick; closes most of the modularity gap to leidenalg
+sjanpy.tl.gpuleiden(adata, resolution=1.0, random_state=42,
+                    gpu_flavor="quality", n_restarts=4,
+                    key_added="leiden_quality")
+```
+
+Check availability at runtime (safe on CPU-only machines):
+
+```python
+if sjanpy.tl.GPU_LEIDEN_AVAILABLE:
+    sjanpy.tl.gpuleiden(adata, resolution=1.0)
+else:
+    sc.tl.leiden(adata, resolution=1.0)   # CPU fallback
+```
+
+**UMAP comparison** on pcw6 (28,630 cells, `resolution=1.0`, `seed=42`):
+
+![UMAP comparison: leidenalg vs gpu deterministic vs gpu quality](figures/umap_compare.png)
+
+| Method | Clusters | Time | ARI vs leidenalg |
+|---|---|---|---|
+| leidenalg (CPU) | 20 | 4.2 s | 1.000 |
+| gpu deterministic | 19 | **0.44 s** | 0.726 |
+| gpu quality | 21 | **1.5 s** | 0.792 |
+
+The heatmap below shows per-cell co-cluster agreement with leidenalg
+(green = same grouping, red = boundary differs). The quality flavor (right)
+recovers finer structure in ambiguous boundary regions compared with the
+deterministic run (left):
+
+![Co-cluster agreement with leidenalg](figures/umap_agreement.png)
+
+Requires [`gpu_leiden`](https://github.com/chansigit/gpu-leiden) — see its
+README for build and install instructions (CUDA ≥ 12.0, sm_80+).
 
 ### Embedding visualization
 
@@ -126,6 +178,8 @@ complex_dotplot(
 
 | Function / Class | Description |
 |---|---|
+| `gpuleiden` | GPU Leiden clustering — drop-in for `sc.tl.leiden` (requires `gpu_leiden`) |
+| `GPU_LEIDEN_AVAILABLE` | `bool` flag — `True` when `gpu_leiden` is installed |
 | `fast_two_group_deg` | Vectorized Welch's t-test DEG between two groups |
 | `compute_nested_deg_df` | Within-cluster DEG between two conditions |
 | `clip_logfc_in_nested_deg_df` | Per-cluster quantile clipping of logFC |
@@ -172,7 +226,18 @@ complex_dotplot(
 | `build_condition_schema` | Build encoding schema from condition DSL specs |
 | `process_file` / `process_file_safetensors` | Process a single h5ad file into chunks |
 | `load_gene_list` / `resolve_gene_indices` | Gene list loading and index resolution |
-| `save_condition_schema` / `load_condition_schema` | Condition schema persistence |
+| `save_condition_schema` / `load_condition_schema` | Condition schema persistence (supports `batch_key`) |
+
+The `--batch-key` argument records which obs column defines batch identity in the condition schema. This is propagated to downstream model creation and evaluation, so that integration metrics (scIB) use the correct batch grouping regardless of how batch is encoded in the condition vector:
+
+```bash
+python -m sjanpy.ml.build_dataset \
+    --h5ad-input train.h5ad --output safetensors_groupmean/ \
+    --numerical-cond "library_size:log1p:zscore" \
+    --cat-cond "biosample_id:groupmean(library_size:log1p)" \
+    --batch-key batch \
+    --save-schema safetensors_groupmean/condition-schema.json
+```
 
 #### Embedding Evaluation (`sjanpy.ml.eval`)
 
