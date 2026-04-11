@@ -5,7 +5,7 @@ from .deg import (
     generate_highlight_dict,
 )
 from .pres import PearsonResidualsScaler
-from .leiden import leiden
+from .gpuleiden import GPU_LEIDEN_AVAILABLE, gpuleiden
 
 __all__ = [
     "fast_two_group_deg",
@@ -13,5 +13,6 @@ __all__ = [
     "clip_logfc_in_nested_deg_df",
     "generate_highlight_dict",
     "PearsonResidualsScaler",
-    "leiden",
+    "GPU_LEIDEN_AVAILABLE",
+    "gpuleiden",
 ]
